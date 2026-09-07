@@ -118,6 +118,16 @@ def _validate_violation_threshold(value) -> int:
     return threshold
 
 
+
+def _validate_stop_mode(value) -> str:
+    mode = _normalize_status(value, "BOTH")
+    if mode not in {"MANUAL", "AUTOMATIC", "BOTH"}:
+        raise HTTPException(
+            status_code=400,
+            detail="stop_mode must be MANUAL, AUTOMATIC, or BOTH",
+        )
+    return mode
+
 def _exam_payload(exam: dict) -> dict:
     exam = exam or {}
     exam_data = _serialize(exam)
@@ -424,6 +434,8 @@ def _merge_exam_assessment(
         "session_number": exam_data.get("session_number", 0),
         "permanentlystopped": exam_data.get("permanentlystopped", False),
         "permanently_stopped": exam_data.get("permanently_stopped", False),
+        "stopmode": exam_data.get("stopmode", "BOTH"),
+        "stop_mode": exam_data.get("stop_mode", "BOTH"),
         "assessmentstatus": assessment_data.get(
             "assessmentstatus",
             "",
@@ -565,6 +577,7 @@ async def create_exam(
         body.get("status"),
         "DRAFT",
     )
+    stop_mode = _validate_stop_mode(body.get("stop_mode", body.get("stopmode", "BOTH")))
 
     if not name:
         raise HTTPException(
@@ -628,6 +641,8 @@ async def create_exam(
         "session_number": 0,
         "permanentlystopped": False,
         "permanently_stopped": False,
+        "stop_mode": stop_mode,
+        "stopmode": stop_mode,
         "created_at": now,
         "createdat": now,
         "updated_at": now,
@@ -1010,14 +1025,7 @@ async def start_exam(
     await emit_exam_event("exam_updated", payload)
     return {"message": "Exam started", "exam": payload, **payload}
 
-@router.patch("/{exam_id}/end")
-async def end_exam(exam_id: str, current_user=Depends(require_role("Examiner", "Admin"))):
-    db = get_db()
-    current_user_id = current_user.get("user_id") or current_user.get("userid")
-    exam = await _ensure_exam_access(db, exam_id, current_user)
-    status = _normalize_status(exam.get("status") or exam.get("examstatus"))
-    if status != "RUNNING":
-        raise HTTPException(status_code=400, detail="Only a running exam can be ended")
+async def _end_exam_run(db, exam: dict, exam_id: str, actor_id: str, automatic: bool = False):
     multi_session = is_multi_session_exam(exam)
     session_number = int(exam.get("sessionnumber", exam.get("session_number", 0)) or 0)
     now = datetime.utcnow()
@@ -1035,16 +1043,19 @@ async def end_exam(exam_id: str, current_user=Depends(require_role("Examiner", "
             "status": "TERMINATED", "assessmentstatus": "TERMINATED", "assessment_status": "TERMINATED",
             "final_status": "TERMINATED", "finalstatus": "TERMINATED",
             "isfinalized": True, "is_finalized": True,
-            "finalizedreason": "EXAM_ENDED", "finalized_reason": "EXAM_ENDED",
+            "finalizedreason": "SESSION_TIMER_ENDED" if automatic else "EXAM_ENDED",
+            "finalized_reason": "SESSION_TIMER_ENDED" if automatic else "EXAM_ENDED",
             "finalizedat": now, "finalized_at": now,
             "activesessionid": None, "active_session_id": None,
             "waitingsessionid": None, "waiting_session_id": None,
             "exit_time": now, "exittime": now, "updated_at": now, "updatedat": now,
         }})
     await db.audit_logs.insert_one({
-        "log_id": f"AUD-{uuid.uuid4().hex[:8].upper()}", "user_id": current_user_id, "userid": current_user_id,
-        "exam_id": exam_id, "examid": exam_id, "action": "EndSession" if multi_session else "EndExam",
-        "reason": "Current multi-session run ended" if multi_session else "Exam manually ended", "timestamp": now,
+        "log_id": f"AUD-{uuid.uuid4().hex[:8].upper()}", "user_id": actor_id, "userid": actor_id,
+        "exam_id": exam_id, "examid": exam_id,
+        "action": "AutoEndSession" if automatic and multi_session else "AutoEndExam" if automatic else "EndSession" if multi_session else "EndExam",
+        "reason": "Current session timer expired" if automatic else "Current multi-session run ended" if multi_session else "Exam manually ended",
+        "timestamp": now,
     })
     updated_exam = await db.exams.find_one(_get_exam_query(exam_id))
     payload = _exam_payload(updated_exam)
@@ -1053,6 +1064,51 @@ async def end_exam(exam_id: str, current_user=Depends(require_role("Examiner", "
     for item in updated_assessments:
         await emit_assessment_event("assessment_updated", _assessment_payload(item))
     return {"message": "Current session ended" if multi_session else "Exam ended", "exam": payload, **payload}
+
+
+@router.patch("/{exam_id}/end")
+async def end_exam(exam_id: str, current_user=Depends(require_role("Examiner", "Admin"))):
+    db = get_db()
+    current_user_id = current_user.get("user_id") or current_user.get("userid")
+    exam = await _ensure_exam_access(db, exam_id, current_user)
+    status = _normalize_status(exam.get("status") or exam.get("examstatus"))
+    if status != "RUNNING":
+        raise HTTPException(status_code=400, detail="Only a running exam can be ended")
+    stop_mode = _validate_stop_mode(exam.get("stopmode", exam.get("stop_mode", "BOTH")))
+    if stop_mode == "AUTOMATIC":
+        raise HTTPException(status_code=403, detail="This exam is configured for automatic session ending only")
+    return await _end_exam_run(db, exam, exam_id, current_user_id, automatic=False)
+
+
+@router.patch("/{exam_id}/auto-end")
+async def auto_end_exam(
+    exam_id: str,
+    current_user=Depends(require_role("Candidate")),
+):
+    """End the current run at timer expiry without permanently stopping the exam."""
+    db = get_db()
+    candidate_id = current_user.get("user_id") or current_user.get("userid")
+    exam = await db.exams.find_one(_get_exam_query(exam_id))
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    assignment = await db.assessments.find_one(_get_assessment_query(exam_id, candidate_id))
+    if not assignment:
+        raise HTTPException(status_code=403, detail="Access denied")
+    stop_mode = _validate_stop_mode(exam.get("stopmode", exam.get("stop_mode", "BOTH")))
+    if stop_mode == "MANUAL":
+        raise HTTPException(status_code=403, detail="This exam is configured for manual session ending")
+    status = _normalize_status(exam.get("status") or exam.get("examstatus"))
+    if status != "RUNNING":
+        payload = _exam_payload(exam)
+        return {"message": "Session is already ended", "exam": payload, **payload}
+    examiner_id = exam.get("examiner_id") or exam.get("examinerid")
+    return await _end_exam_run(
+        db=db,
+        exam=exam,
+        exam_id=exam_id,
+        actor_id=examiner_id,
+        automatic=True,
+    )
 
 @router.patch("/{exam_id}/stop")
 async def stop_exam(exam_id: str, current_user=Depends(require_role("Examiner", "Admin"))):

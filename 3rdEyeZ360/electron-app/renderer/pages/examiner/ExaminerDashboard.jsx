@@ -247,6 +247,7 @@ function normalizeExam(exam) {
     timeframes: exam.timeframes ?? exam.flexibleintervals ?? exam.flexible_intervals ?? [],
     sessionnumber: Number(exam.sessionnumber ?? exam.session_number ?? 0),
     permanentlystopped: Boolean(exam.permanentlystopped ?? exam.permanently_stopped),
+    stopmode: String(exam.stopmode ?? exam.stop_mode ?? "BOTH").toUpperCase(),
     violationthreshold: Math.max(
       1,
       Number(
@@ -2494,6 +2495,8 @@ export default function ExaminerDashboard() {
   const isExamCompleted = normalizedExamStatus === "COMPLETED";
   const isExamStopped = normalizedExamStatus === "STOPPED";
   const isMultiSessionExam = selectedExam?.examtype === "MULTI_SESSION";
+  const stopMode = String(selectedExam?.stopmode ?? selectedExam?.stop_mode ?? "BOTH").toUpperCase();
+  const manualSessionEndAllowed = stopMode !== "AUTOMATIC";
   const canStartExam = !isExamRunning && !isExamStopped && (!isExamCompleted || isMultiSessionExam);
 
   const pendingRequestsCount = useMemo(
@@ -4606,8 +4609,15 @@ export default function ExaminerDashboard() {
               <GradientButton theme={theme} disabled gradient={t.successGradient}>Running</GradientButton>
             ) : null}
             {isExamRunning ? (
-              <GradientButton theme={theme} onClick={() => setConfirmEndOpen(true)} disabled={endingExam} gradient={t.warningGradient} glow={t.glowWarning}>
-                {endingExam ? "Ending..." : isMultiSessionExam ? "End Current Session" : "End Exam"}
+              <GradientButton
+                theme={theme}
+                onClick={() => manualSessionEndAllowed && setConfirmEndOpen(true)}
+                disabled={endingExam || !manualSessionEndAllowed}
+                gradient={t.warningGradient}
+                glow={t.glowWarning}
+                style={!manualSessionEndAllowed ? { cursor: "not-allowed" } : undefined}
+              >
+                {endingExam ? "Ending..." : !manualSessionEndAllowed ? "Auto End Enabled" : isMultiSessionExam ? "End Current Session" : "End Exam"}
               </GradientButton>
             ) : null}
             {isMultiSessionExam && !isExamStopped ? (

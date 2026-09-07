@@ -583,6 +583,7 @@ function normalizeExam(raw) {
     examtype: toUpper(pick(raw.examtype, raw.exam_type, "SINGLE_SESSION")),
     sessionnumber: Number(pick(raw.sessionnumber, raw.session_number, 0)) || 0,
     permanentlystopped: Boolean(pick(raw.permanentlystopped, raw.permanently_stopped, false)),
+    stopmode: toUpper(pick(raw.stopmode, raw.stop_mode, "BOTH")),
   };
 }
 function normalizeAssessment(raw) {
@@ -615,6 +616,7 @@ function normalizeAssessment(raw) {
     examtype: toUpper(pick(raw.examtype, raw.exam_type, "SINGLE_SESSION")),
     sessionnumber: Number(pick(raw.sessionnumber, raw.session_number, 0)) || 0,
     permanentlystopped: Boolean(pick(raw.permanentlystopped, raw.permanently_stopped, false)),
+    stopmode: toUpper(pick(raw.stopmode, raw.stop_mode, "BOTH")),
     isfinalized: Boolean(pick(raw.isfinalized, raw.is_finalized, false)),
   };
 }
@@ -711,6 +713,7 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
   const waitingRegistrationRef = useRef(null);
   const monitoringStartedRef = useRef(false);
   const thresholdExitRef = useRef(false);
+  const automaticEndRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -752,6 +755,8 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
   const [browserError, setBrowserError] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
   const [allowedSitesOpen, setAllowedSitesOpen] = useState(false);
+  const [fiveMinuteAlertOpen, setFiveMinuteAlertOpen] = useState(false);
+  const fiveMinuteAlertShownRef = useRef(false);
   const [pauseLocked, setPauseLocked] = useState(
     canonicalStatus(normalizedAssessment?.status) === "PAUSED"
   );
@@ -1676,6 +1681,44 @@ setPauseLocked(false);
       : totalMs
     : 0;
 
+  const fiveMinuteThresholdMs = 5 * 60 * 1000;
+  useEffect(() => {
+    if (fiveMinuteAlertShownRef.current || totalMs <= fiveMinuteThresholdMs) return;
+    if (!timerStartedAtRef.current || remainingMs <= 0 || remainingMs > fiveMinuteThresholdMs) return;
+    const sessionNumber = Number(pick(merged.sessionnumber, merged.session_number, 1) || 1);
+    const key = assessmentId ? `3rdeyez360.five-minute-alert.${assessmentId}.${sessionNumber}` : null;
+    try {
+      if (key && localStorage.getItem(key) === "shown") {
+        fiveMinuteAlertShownRef.current = true;
+        return;
+      }
+      if (key) localStorage.setItem(key, "shown");
+    } catch (error) {
+      console.warn("Unable to persist five-minute alert state", error);
+    }
+    fiveMinuteAlertShownRef.current = true;
+    setFiveMinuteAlertOpen(true);
+  }, [remainingMs, totalMs, assessmentId, merged.sessionnumber, merged.session_number]);
+
+  const stopMode = toUpper(pick(merged.stopmode, merged.stop_mode, "BOTH"));
+  const automaticSessionEndEnabled = stopMode === "AUTOMATIC" || stopMode === "BOTH";
+  useEffect(() => {
+    if (!automaticSessionEndEnabled || !isExamRunning || totalMs <= 0 || remainingMs > 0) return;
+    if (!examId || !accessToken || automaticEndRef.current || completedRef.current) return;
+    automaticEndRef.current = true;
+    const endAtTimerExpiry = async () => {
+      try {
+        setStatusMsg("Time expired. Ending the current session...");
+        await axios.patch(`${API}/api/exams/${examId}/auto-end`, {}, { headers: { Authorization: `Bearer ${accessToken}` } });
+        await finishExam();
+      } catch (error) {
+        automaticEndRef.current = false;
+        setStatusMsg(error?.response?.data?.detail || error?.message || "Automatic session end failed.");
+      }
+    };
+    void endAtTimerExpiry();
+  }, [automaticSessionEndEnabled, isExamRunning, totalMs, remainingMs, examId, accessToken, finishExam]);
+
   useEffect(() => {
     return () => {
       if (completedRef.current || intentionalExitRef.current || !entryGrantedRef.current || !assessmentId || !accessToken) return;
@@ -2446,6 +2489,52 @@ setPauseLocked(false);
         </div>
       </div>
 
+      {fiveMinuteAlertOpen ? (
+        <div
+          role="alert"
+          aria-live="assertive"
+          style={{
+            position: "fixed",
+            top: 72,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 1000,
+            width: "min(300px, calc(100vw - 32px))",
+            minHeight: 44,
+            padding: "8px 9px 8px 10px",
+            borderRadius: 12,
+            display: "flex",
+            alignItems: "center",
+            gap: 9,
+            background: t.surfaceElevated,
+            border: `1px solid ${t.warning}88`,
+            boxShadow: `0 10px 28px rgba(0,0,0,0.35), 0 0 14px ${t.warning}20`,
+            backdropFilter: "blur(18px)",
+            WebkitBackdropFilter: "blur(18px)",
+            animation: "fadeIn 0.25s ease",
+          }}
+        >
+          <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", background: t.warningGradient }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <polyline points="12 7 12 12 15 14" />
+            </svg>
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ color: t.warning, fontSize: 8, fontWeight: 900, letterSpacing: 0.8, textTransform: "uppercase", lineHeight: 1 }}>Time warning</div>
+            <div style={{ marginTop: 3, color: t.textPrimary, fontSize: 13.5, fontWeight: 800, fontFamily: "'Space Grotesk', sans-serif", lineHeight: 1.2 }}>Only 5 minutes left</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFiveMinuteAlertOpen(false)}
+            aria-label="Dismiss five-minute warning"
+            title="Dismiss"
+            style={{ width: 26, height: 26, padding: 0, flexShrink: 0, borderRadius: 7, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textSecondary, cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       {/* Recovery back-to-dashboard button when terminal */}
       {typeof onReturnToDashboard === "function" &&
       (canonicalStatus(assessmentStatus) === "LOCKED" || canonicalStatus(assessmentStatus) === "TERMINATED") ? (

@@ -968,6 +968,7 @@ const defaultForm = {
   instructions: "",
   allowed_websites: [],
   exam_type: "SINGLE_SESSION",
+  stop_mode: "BOTH",
   timeframes: [{ date: "", start_time: "", end_time: "" }],
 };
 
@@ -1538,7 +1539,28 @@ export default function CreateExam({ onBack, onCreated }) {
                   })}
                 </div>
               </Field>
-
+              <Field label="Session Stop Mode *" theme={theme} hint="Permanent Stop Exam always remains an examiner-only action.">
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                  {[
+                    { value: "MANUAL", label: "Manual", desc: "Examiner ends each running session." },
+                    { value: "AUTOMATIC", label: "Automatic", desc: "Current session ends when its timer expires." },
+                    { value: "BOTH", label: "Both", desc: "End manually or automatically at timer expiry." },
+                  ].map((option) => {
+                    const selected = form.stop_mode === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => set("stop_mode", option.value)}
+                        style={{ padding: "10px", borderRadius: 10, border: `1px solid ${selected ? t.borderAccent : t.border}`, background: selected ? t.accentSoft : t.inputBg, color: selected ? t.accent : t.textSecondary, cursor: "pointer", textAlign: "left", fontFamily: "'Inter', sans-serif", fontWeight: 700 }}
+                      >
+                        {option.label}
+                        <div style={{ marginTop: 4, fontSize: 9.5, lineHeight: 1.4, color: t.textMuted, fontWeight: 500 }}>{option.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
               {form.exam_type === "SINGLE_SESSION" ? (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                   <Field label="Date *" error={errors.date} theme={theme}>
