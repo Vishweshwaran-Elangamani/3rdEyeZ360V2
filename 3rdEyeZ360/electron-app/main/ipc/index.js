@@ -1624,4 +1624,4 @@ function registerIpcHandlers(mainWindow) {
 
 }
 
-module.exports = registerIpcHandlers;
+module.exports = registerIpcHandlers; 
