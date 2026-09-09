@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+﻿from datetime import datetime, timedelta
 import asyncio
 import logging
 import uuid
@@ -128,6 +128,19 @@ def _validate_stop_mode(value) -> str:
         )
     return mode
 
+
+def _validate_extension_minutes(value) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail="Extension must be a positive whole number of minutes")
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail="Extension must be a positive whole number of minutes") from error
+    if str(value).strip() != str(minutes) or minutes < 1:
+        raise HTTPException(status_code=400, detail="Extension must be a positive whole number of minutes")
+    return minutes
+
+
 def _exam_payload(exam: dict) -> dict:
     exam = exam or {}
     exam_data = _serialize(exam)
@@ -211,11 +224,22 @@ def _exam_payload(exam: dict) -> dict:
     exam_data["session_number"] = session_number
     exam_data["permanentlystopped"] = permanently_stopped
     exam_data["permanently_stopped"] = permanently_stopped
+    stop_mode = _validate_stop_mode(exam.get("stopmode", exam.get("stop_mode", "BOTH")))
+    exam_data["stopmode"] = stop_mode
+    exam_data["stop_mode"] = stop_mode
 
     exam_data["durationminutes"] = exam.get(
         "durationminutes",
         exam.get("duration_minutes", 0),
     )
+    extension_minutes = int(exam.get("timeextensionminutes", exam.get("time_extension_minutes", 0)) or 0)
+    exam_data["timeextensionminutes"] = extension_minutes
+    exam_data["time_extension_minutes"] = extension_minutes
+    exam_data["effectivedurationminutes"] = int(exam_data["durationminutes"] or 0) + extension_minutes
+    exam_data["effective_duration_minutes"] = exam_data["effectivedurationminutes"]
+    deadline = exam.get("sessiondeadlineat", exam.get("session_deadline_at"))
+    exam_data["sessiondeadlineat"] = deadline
+    exam_data["session_deadline_at"] = deadline
 
     violation_threshold = _validate_violation_threshold(
         exam.get(
@@ -401,6 +425,12 @@ def _merge_exam_assessment(
             "durationminutes",
             0,
         ),
+        "timeextensionminutes": exam_data.get("timeextensionminutes", 0),
+        "time_extension_minutes": exam_data.get("time_extension_minutes", 0),
+        "effectivedurationminutes": exam_data.get("effectivedurationminutes", 0),
+        "effective_duration_minutes": exam_data.get("effective_duration_minutes", 0),
+        "sessiondeadlineat": exam_data.get("sessiondeadlineat"),
+        "session_deadline_at": exam_data.get("session_deadline_at"),
         "allowedwebsites": (
             assessment_data.get("allowedwebsites")
             or exam_data.get("allowedwebsites")
@@ -623,6 +653,10 @@ async def create_exam(
         "durationminutes": int(
             duration_minutes
         ),
+        "time_extension_minutes": 0,
+        "timeextensionminutes": 0,
+        "session_deadline_at": None,
+        "sessiondeadlineat": None,
         "violation_threshold": violation_threshold,
         "violationthreshold": violation_threshold,
         "threshold": violation_threshold,
@@ -867,6 +901,78 @@ async def get_exam(
     return _exam_payload(exam)
 
 
+@router.patch("/{exam_id}/extend-time")
+async def extend_exam_time(exam_id: str, body: dict, current_user=Depends(require_role("Examiner", "Admin"))):
+    db = get_db()
+    exam = await _ensure_exam_access(db, exam_id, current_user)
+    actor_id = current_user.get("user_id") or current_user.get("userid")
+    if _normalize_status(exam.get("status") or exam.get("examstatus")) != "RUNNING":
+        raise HTTPException(status_code=409, detail="The session is no longer running. Time can no longer be extended.")
+    raw = body.get("minutes", body.get("extension_minutes", body.get("extensionminutes")))
+    if raw is None:
+        raise HTTPException(status_code=400, detail="minutes is required")
+    added = _validate_extension_minutes(raw)
+    previous = int(exam.get("timeextensionminutes", exam.get("time_extension_minutes", 0)) or 0)
+    total = previous + added
+    now = datetime.utcnow()
+    deadline = exam.get("sessiondeadlineat", exam.get("session_deadline_at"))
+    if not isinstance(deadline, datetime):
+        started = exam.get("startedat", exam.get("started_at"))
+        base = int(exam.get("durationminutes", exam.get("duration_minutes", 0)) or 0)
+        deadline = started + timedelta(minutes=max(0, base)) if isinstance(started, datetime) else now
+    new_deadline = max(deadline, now) + timedelta(minutes=added)
+    await db.exams.update_one(_get_exam_query(exam_id), {"$set": {
+        "time_extension_minutes": total, "timeextensionminutes": total,
+        "session_deadline_at": new_deadline, "sessiondeadlineat": new_deadline,
+        "updated_at": now, "updatedat": now,
+    }})
+    await db.audit_logs.insert_one({
+        "log_id": f"AUD-{uuid.uuid4().hex[:8].upper()}", "user_id": actor_id, "userid": actor_id,
+        "exam_id": exam_id, "examid": exam_id, "action": "ExtendSessionTime",
+        "reason": f"Added {added} minute(s) to the current running session",
+        "added_minutes": added, "total_extension_minutes": total,
+        "session_number": int(exam.get("sessionnumber", exam.get("session_number", 0)) or 0), "timestamp": now,
+    })
+    updated = await db.exams.find_one(_get_exam_query(exam_id))
+    payload = _exam_payload(updated)
+    await emit_exam_event("exam_updated", payload)
+    return {"message": f"Added {added} minute(s)", "exam": payload, **payload}
+
+@router.patch("/{exam_id}/stop-mode")
+async def update_stop_mode(exam_id: str, body: dict, current_user=Depends(require_role("Examiner", "Admin"))):
+    db = get_db()
+    exam = await _ensure_exam_access(db, exam_id, current_user)
+    current_user_id = current_user.get("user_id") or current_user.get("userid")
+    status = _normalize_status(exam.get("status") or exam.get("examstatus"))
+    if status != "RUNNING":
+        raise HTTPException(
+            status_code=409,
+            detail="The ending mode can only be changed while the exam session is running.",
+        )
+    raw_mode = body.get("stop_mode", body.get("stopmode"))
+    if raw_mode is None:
+        raise HTTPException(status_code=400, detail="stop_mode is required")
+    stop_mode = _validate_stop_mode(raw_mode)
+    previous_mode = _validate_stop_mode(exam.get("stopmode", exam.get("stop_mode", "BOTH")))
+    now = datetime.utcnow()
+    await db.exams.update_one(_get_exam_query(exam_id), {"$set": {
+        "stop_mode": stop_mode, "stopmode": stop_mode,
+        "updated_at": now, "updatedat": now,
+    }})
+    await db.audit_logs.insert_one({
+        "log_id": f"AUD-{uuid.uuid4().hex[:8].upper()}",
+        "user_id": current_user_id, "userid": current_user_id,
+        "exam_id": exam_id, "examid": exam_id,
+        "action": "UpdateStopMode",
+        "reason": f"Changed session stop mode from {previous_mode} to {stop_mode}",
+        "previous_value": previous_mode, "new_value": stop_mode,
+        "timestamp": now,
+    })
+    updated_exam = await db.exams.find_one(_get_exam_query(exam_id))
+    payload = _exam_payload(updated_exam)
+    await emit_exam_event("exam_updated", payload)
+    return {"message": "Session stop mode updated", "exam": payload, **payload}
+
 @router.patch("/{exam_id}/violation-threshold")
 async def update_violation_threshold(
     exam_id: str,
@@ -981,12 +1087,17 @@ async def start_exam(
     current_session = int(exam.get("sessionnumber", exam.get("session_number", 0)) or 0)
     next_session = current_session + 1 if multi_session else 1
     now = datetime.utcnow()
+    base_duration_minutes = int(exam.get("durationminutes", exam.get("duration_minutes", 0)) or 0)
+    session_deadline_at = now + timedelta(minutes=max(0, base_duration_minutes))
     await db.exams.update_one(
         _get_exam_query(exam_id),
         {"$set": {
             "status": "RUNNING", "examstatus": "RUNNING",
             "sessionnumber": next_session, "session_number": next_session,
-            "started_at": now, "startedat": now, "updated_at": now, "updatedat": now,
+            "started_at": now, "startedat": now,
+            "time_extension_minutes": 0, "timeextensionminutes": 0,
+            "session_deadline_at": session_deadline_at, "sessiondeadlineat": session_deadline_at,
+            "updated_at": now, "updatedat": now,
         }},
     )
     if multi_session:

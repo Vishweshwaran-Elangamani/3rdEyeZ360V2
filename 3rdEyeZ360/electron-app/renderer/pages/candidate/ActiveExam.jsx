@@ -573,6 +573,8 @@ function normalizeExam(raw) {
     starttime: pick(raw.starttime, raw.start_time, raw.examstarttime, raw.exam_start_time, "â€”"),
     endtime: pick(raw.endtime, raw.end_time, raw.examendtime, raw.exam_end_time, "â€”"),
     durationminutes: Number(pick(raw.durationminutes, raw.duration_minutes, 0) || 0),
+    timeextensionminutes: Number(pick(raw.timeextensionminutes, raw.time_extension_minutes, 0) || 0),
+    sessiondeadlineat: pick(raw.sessiondeadlineat, raw.session_deadline_at),
     instructions: pick(raw.instructions, ""),
     allowedwebsites: normalizeSites(raw.allowedwebsites, raw.allowed_websites),
     allowedapplications: Array.isArray(pick(raw.allowedapplications, raw.allowed_applications))
@@ -604,6 +606,8 @@ function normalizeAssessment(raw) {
     starttime: pick(raw.starttime, raw.start_time, raw.examstarttime, raw.exam_start_time, "â€”"),
     endtime: pick(raw.endtime, raw.end_time, raw.examendtime, raw.exam_end_time, "â€”"),
     durationminutes: Number(pick(raw.durationminutes, raw.duration_minutes, 0) || 0),
+    timeextensionminutes: Number(pick(raw.timeextensionminutes, raw.time_extension_minutes, 0) || 0),
+    sessiondeadlineat: pick(raw.sessiondeadlineat, raw.session_deadline_at),
     instructions: pick(raw.instructions, ""),
     allowedwebsites: normalizeSites(raw.allowedwebsites, raw.allowed_websites),
     allowedapplications: Array.isArray(pick(raw.allowedapplications, raw.allowed_applications))
@@ -1666,20 +1670,22 @@ setPauseLocked(false);
       socket.off("request_reviewed", onAssessmentUpdated);
     };
   }, [socket, examId, assessmentId, finishExam, hideBrowserForPause, showBrowserForActiveState, exitForViolationThreshold]);
-  const durationMinutes = Number(
-    merged.durationminutes || normalizedExam?.durationminutes || 0
-  );
+  const baseDurationMinutes = Number(merged.durationminutes || normalizedExam?.durationminutes || 0);
+  const extensionMinutes = Number(pick(liveExam?.timeextensionminutes, liveExam?.time_extension_minutes, normalizedExam?.timeextensionminutes, 0) || 0);
+  const durationMinutes = Math.max(0, baseDurationMinutes + extensionMinutes);
   const totalMs = durationMinutes > 0 ? durationMinutes * 60 * 1000 : 0;
+  const deadlineValue = pick(liveExam?.sessiondeadlineat, liveExam?.session_deadline_at, normalizedExam?.sessiondeadlineat);
+  const authoritativeDeadlineMs = deadlineValue ? new Date(deadlineValue).getTime() : 0;
   // Continuous countdown from the original candidate-entry timestamp.
   // Refresh, pause, resume, and component remount do not stop or reset time.
   const elapsedMs = timerStartedAtRef.current
     ? Math.max(0, now - timerStartedAtRef.current)
     : 0;
-  const remainingMs = totalMs > 0
-    ? timerStartedAtRef.current
-      ? Math.max(0, totalMs - elapsedMs)
-      : totalMs
-    : 0;
+  const remainingMs = Number.isFinite(authoritativeDeadlineMs) && authoritativeDeadlineMs > 0
+    ? Math.max(0, authoritativeDeadlineMs - now)
+    : totalMs > 0
+      ? timerStartedAtRef.current ? Math.max(0, totalMs - elapsedMs) : totalMs
+      : 0;
 
   const fiveMinuteThresholdMs = 5 * 60 * 1000;
   useEffect(() => {

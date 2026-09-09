@@ -232,6 +232,15 @@ function formatStatus(status) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function parseServerDateMs(value) {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  const text = String(value).trim();
+  if (!text) return 0;
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+  const timestamp = new Date(hasTimezone ? text : `${text}Z`).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
 function normalizeExam(exam) {
   if (!exam) return null;
   return {
@@ -243,6 +252,9 @@ function normalizeExam(exam) {
     starttime: exam.starttime ?? exam.start_time ?? "—",
     endtime: exam.endtime ?? exam.end_time ?? "—",
     durationminutes: exam.durationminutes ?? exam.duration_minutes ?? 0,
+    startedat: exam.startedat ?? exam.started_at ?? null,
+    timeextensionminutes: Number(exam.timeextensionminutes ?? exam.time_extension_minutes ?? 0) || 0,
+    sessiondeadlineat: exam.sessiondeadlineat ?? exam.session_deadline_at ?? null,
     examtype: String(exam.examtype ?? exam.exam_type ?? "SINGLE_SESSION").toUpperCase(),
     timeframes: exam.timeframes ?? exam.flexibleintervals ?? exam.flexible_intervals ?? [],
     sessionnumber: Number(exam.sessionnumber ?? exam.session_number ?? 0),
@@ -2458,6 +2470,13 @@ export default function ExaminerDashboard() {
   const [thresholdInput, setThresholdInput] = useState("10");
   const [thresholdSaving, setThresholdSaving] = useState(false);
   const [thresholdError, setThresholdError] = useState("");
+  const [stopModeSaving, setStopModeSaving] = useState(false);
+  const [stopModeOpen, setStopModeOpen] = useState(false);
+  const stopModeMenuRef = useRef(null);
+  const [extendTimeOpen, setExtendTimeOpen] = useState(false);
+  const [extendTimeInput, setExtendTimeInput] = useState("");
+  const [extendTimeSaving, setExtendTimeSaving] = useState(false);
+  const extendTimeMenuRef = useRef(null);
 
   const headers = useMemo(
     () => ({ Authorization: `Bearer ${accessToken}` }),
@@ -2485,6 +2504,15 @@ export default function ExaminerDashboard() {
     setThresholdEditing(false);
     setThresholdError("");
   }, [selectedExamId, selectedExam?.violationthreshold]);
+  useEffect(() => {
+    if (!stopModeOpen) return undefined;
+    const closeMenu = (event) => {
+      if (!stopModeMenuRef.current?.contains(event.target)) setStopModeOpen(false);
+      if (!extendTimeMenuRef.current?.contains(event.target)) setExtendTimeOpen(false);
+    };
+    document.addEventListener("mousedown", closeMenu);
+    return () => document.removeEventListener("mousedown", closeMenu);
+  }, [stopModeOpen]);
   const {
     streams: candidateCameraStreams,
     states: candidateCameraStates,
@@ -2497,6 +2525,22 @@ export default function ExaminerDashboard() {
   const isMultiSessionExam = selectedExam?.examtype === "MULTI_SESSION";
   const stopMode = String(selectedExam?.stopmode ?? selectedExam?.stop_mode ?? "BOTH").toUpperCase();
   const manualSessionEndAllowed = stopMode !== "AUTOMATIC";
+  const sessionModeLocked = !isExamRunning;
+  const sessionExtensionMinutes = Number(selectedExam?.timeextensionminutes ?? 0) || 0;
+  const deadlineMs = parseServerDateMs(
+    selectedExam?.sessiondeadlineat ?? selectedExam?.session_deadline_at,
+  );
+  const fallbackStartMs = parseServerDateMs(
+    selectedExam?.startedat ?? selectedExam?.started_at,
+  );
+  const fallbackDeadlineMs = fallbackStartMs > 0 ? fallbackStartMs + (Number(selectedExam?.durationminutes || 0) + sessionExtensionMinutes) * 60000 : 0;
+  const effectiveDeadlineMs = Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : fallbackDeadlineMs;
+  const sessionRemainingMs = isExamRunning && effectiveDeadlineMs > 0 ? Math.max(0, effectiveDeadlineMs - clock.getTime()) : 0;
+  const sessionSeconds = Math.ceil(sessionRemainingMs / 1000);
+  const sessionTimerText = `${String(Math.floor(sessionSeconds / 3600)).padStart(2, "0")}:${String(Math.floor((sessionSeconds % 3600) / 60)).padStart(2, "0")}:${String(sessionSeconds % 60).padStart(2, "0")}`;
+  useEffect(() => {
+    if (sessionModeLocked && stopModeOpen) setStopModeOpen(false);
+  }, [sessionModeLocked, stopModeOpen]);
   const canStartExam = !isExamRunning && !isExamStopped && (!isExamCompleted || isMultiSessionExam);
 
   const pendingRequestsCount = useMemo(
@@ -3109,6 +3153,47 @@ export default function ExaminerDashboard() {
     candidateCameraStates,
     requestCandidateCamera,
   ]);
+  const extendSessionTime = async (minutes) => {
+    if (!isExamRunning) { setExtendTimeOpen(false); setActionMsg("The session is no longer running. Time can no longer be extended."); setTimeout(() => setActionMsg(""), 4500); return; }
+    const value = Number(minutes);
+    if (!Number.isInteger(value) || value < 1) { setActionMsg("Enter a positive whole number of minutes."); setTimeout(() => setActionMsg(""), 3500); return; }
+    setExtendTimeSaving(true);
+    try {
+      const response = await axios.patch(`${API}/api/exams/${selectedExamId}/extend-time`, { minutes: value }, { headers });
+      const updated = normalizeExam(response.data?.exam ?? response.data);
+      setSelectedExam((previous) => ({ ...(previous || {}), ...updated }));
+      setExams((previous) => previous.map((item) => item.examid === updated.examid ? { ...item, ...updated } : item));
+      setActionMsg(`${value} minute${value === 1 ? "" : "s"} added to the current session`);
+      setTimeout(() => setActionMsg(""), 3500); setExtendTimeInput(""); setExtendTimeOpen(false);
+    } catch (error) { const message = error?.response?.data?.detail || error?.message || "Time extension failed."; setActionMsg(`Time extension failed: ${message}`); setTimeout(() => setActionMsg(""), 4500); }
+    finally { setExtendTimeSaving(false); }
+  };
+  const showStopModeLockedMessage = () => {
+    setStopModeOpen(false);
+    setActionMsg("The session is no longer running. The ending mode cannot be changed.");
+    setTimeout(() => setActionMsg(""), 4500);
+  };
+  const updateStopMode = async (nextMode) => {
+    if (sessionModeLocked) { showStopModeLockedMessage(); return; }
+    if (!selectedExamId || stopModeSaving || nextMode === stopMode) return;
+    setStopModeSaving(true);
+    try {
+      const response = await axios.patch(`${API}/api/exams/${selectedExamId}/stop-mode`, { stop_mode: nextMode }, { headers });
+      const updatedExam = normalizeExam(response.data?.exam ?? response.data);
+      if (updatedExam?.examid) {
+        setSelectedExam((previous) => ({ ...(previous || {}), ...updatedExam }));
+        setExams((previous) => previous.map((item) => item.examid === updatedExam.examid ? { ...item, ...updatedExam } : item));
+      }
+      const label = nextMode === "BOTH" ? "Manual or Automatic" : nextMode.charAt(0) + nextMode.slice(1).toLowerCase();
+      setActionMsg(`Session ending changed to ${label}`);
+      setTimeout(() => setActionMsg(""), 3000);
+      setStopModeOpen(false);
+    } catch (error) {
+      const message = error?.response?.data?.detail || error?.message || "Stop mode update failed.";
+      setActionMsg(`Stop mode update failed: ${message}`);
+      setTimeout(() => setActionMsg(""), 4000);
+    } finally { setStopModeSaving(false); }
+  };
   const saveViolationThreshold = async () => {
     if (!selectedExamId || thresholdSaving) return;
     const value = Number(thresholdInput);
@@ -4483,6 +4568,9 @@ export default function ExaminerDashboard() {
             gap: 12,
             flexShrink: 0,
             flexWrap: "wrap",
+            position: "relative",
+            zIndex: 200,
+            overflow: "visible",
           }}
         >
           <GhostButton
@@ -4608,16 +4696,34 @@ export default function ExaminerDashboard() {
             ) : isExamRunning ? (
               <GradientButton theme={theme} disabled gradient={t.successGradient}>Running</GradientButton>
             ) : null}
-            {isExamRunning ? (
-              <GradientButton
-                theme={theme}
-                onClick={() => manualSessionEndAllowed && setConfirmEndOpen(true)}
-                disabled={endingExam || !manualSessionEndAllowed}
-                gradient={t.warningGradient}
-                glow={t.glowWarning}
-                style={!manualSessionEndAllowed ? { cursor: "not-allowed" } : undefined}
-              >
-                {endingExam ? "Ending..." : !manualSessionEndAllowed ? "Auto End Enabled" : isMultiSessionExam ? "End Current Session" : "End Exam"}
+            <div ref={extendTimeMenuRef} style={{ position: "relative", zIndex: 221, flexShrink: 0 }}>
+              <button type="button" onClick={() => isExamRunning ? setExtendTimeOpen((open) => !open) : void extendSessionTime(0)} style={{ height: 40, minWidth: 142, padding: "0 8px 0 11px", borderRadius: 10, border: `1px solid ${extendTimeOpen ? t.borderAccent : t.border}`, background: extendTimeOpen ? t.surfaceGlassHover : t.surfaceGlass, color: sessionRemainingMs <= 300000 ? t.warning : t.textPrimary, display: "inline-flex", alignItems: "center", gap: 8, cursor: isExamRunning ? "pointer" : "not-allowed", opacity: isExamRunning ? 1 : 0.62, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 800 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg><span>{sessionTimerText}</span><span style={{ marginLeft: "auto", width: 22, height: 22, borderRadius: 7, display: "inline-flex", alignItems: "center", justifyContent: "center", background: t.accentSoft, color: t.accent, fontSize: 16 }}>+</span>
+              </button>
+              {extendTimeOpen ? <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10000, width: 232, padding: 10, borderRadius: 12, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: "0 18px 44px rgba(0,0,0,0.5)" }}>
+                <div style={{ color: t.textPrimary, fontSize: 12, fontWeight: 800, marginBottom: 8 }}>Extend current session</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>{[5,10,15].map((m) => <button key={m} disabled={extendTimeSaving} onClick={() => void extendSessionTime(m)} style={{ height: 34, borderRadius: 8, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.accent, cursor: "pointer", fontWeight: 800 }}>+{m}</button>)}</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}><input type="number" min="1" step="1" value={extendTimeInput} onChange={(e) => setExtendTimeInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void extendSessionTime(extendTimeInput); }} placeholder="Custom min" style={{ width: 0, flex: 1, height: 34, padding: "0 9px", borderRadius: 8, border: `1px solid ${t.border}`, background: t.inputBg, color: t.textPrimary }}/><button disabled={extendTimeSaving} onClick={() => void extendSessionTime(extendTimeInput)} style={{ border: 0, borderRadius: 8, padding: "0 11px", background: t.accentGradient, color: "#fff", fontWeight: 800 }}>{extendTimeSaving ? "..." : "Add"}</button></div>
+                {sessionExtensionMinutes > 0 ? <div style={{ marginTop: 8, color: t.textMuted, fontSize: 10 }}>Added this session: +{sessionExtensionMinutes} min</div> : null}
+              </div> : null}
+            </div>
+            <div ref={stopModeMenuRef} style={{ position: "relative", zIndex: 220, flexShrink: 0 }}>
+              <button type="button" disabled={stopModeSaving} onClick={() => { if (sessionModeLocked) { showStopModeLockedMessage(); return; } setStopModeOpen((open) => !open); }} aria-haspopup="listbox" aria-expanded={stopModeOpen} style={{ height: 40, minWidth: 148, padding: "0 11px", borderRadius: 10, border: `1px solid ${stopModeOpen ? t.borderAccent : t.border}`, background: stopModeOpen ? t.surfaceGlassHover : t.surfaceGlass, color: stopMode === "AUTOMATIC" ? t.warning : stopMode === "MANUAL" ? t.info : t.success, display: "inline-flex", alignItems: "center", justifyContent: "space-between", gap: 9, cursor: stopModeSaving ? "wait" : sessionModeLocked ? "not-allowed" : "pointer", opacity: sessionModeLocked ? 0.62 : 1, fontFamily: "'Inter', sans-serif", fontSize: 11.5, fontWeight: 800, boxShadow: stopModeOpen ? `0 0 0 3px ${t.accentSoft}` : "none" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: stopMode === "AUTOMATIC" ? t.warning : stopMode === "MANUAL" ? t.info : t.success, boxShadow: `0 0 7px ${stopMode === "AUTOMATIC" ? t.warning : stopMode === "MANUAL" ? t.info : t.success}88` }} />{stopModeSaving ? "Saving..." : stopMode === "AUTOMATIC" ? "Automatic End" : stopMode === "MANUAL" ? "Manual End" : "Manual + Auto"}</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ transform: stopModeOpen ? "rotate(180deg)" : "rotate(0deg)" }}><polyline points="6 9 12 15 18 9" /></svg>
+              </button>
+              {stopModeOpen ? (
+                <div role="listbox" aria-label="Session ending mode" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10000, width: 220, padding: 6, borderRadius: 12, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: "0 18px 44px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+                  {[{ value: "MANUAL", label: "Manual End", color: t.info }, { value: "AUTOMATIC", label: "Automatic End", color: t.warning }, { value: "BOTH", label: "Manual + Auto", color: t.success }].map((option) => {
+                    const active = option.value === stopMode;
+                    return <button key={option.value} type="button" role="option" aria-selected={active} disabled={stopModeSaving} onClick={() => void updateStopMode(option.value)} style={{ width: "100%", height: 38, padding: "0 10px", border: "none", borderRadius: 8, background: active ? `${option.color}18` : "transparent", color: active ? option.color : t.textSecondary, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 9, cursor: stopModeSaving ? "wait" : "pointer", fontFamily: "'Inter', sans-serif", fontSize: 11.5, fontWeight: active ? 800 : 700, textAlign: "left" }}><span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: option.color }} />{option.label}</span>{active ? <span style={{ color: option.color }}>✓</span> : null}</button>;
+                  })}
+                </div>
+              ) : null}
+            </div>
+            {isExamRunning && manualSessionEndAllowed ? (
+              <GradientButton theme={theme} onClick={() => setConfirmEndOpen(true)} disabled={endingExam} gradient={t.warningGradient} glow={t.glowWarning}>
+                {endingExam ? "Ending..." : isMultiSessionExam ? "End Current Session" : "End Exam"}
               </GradientButton>
             ) : null}
             {isMultiSessionExam && !isExamStopped ? (
@@ -4682,6 +4788,8 @@ export default function ExaminerDashboard() {
             gap: 10,
             flexShrink: 0,
             flexWrap: "wrap",
+            position: "relative",
+            zIndex: 20,
           }}
         >
           <MonitorTabButton
