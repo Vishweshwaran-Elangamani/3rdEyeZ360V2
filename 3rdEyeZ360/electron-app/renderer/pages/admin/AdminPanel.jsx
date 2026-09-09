@@ -534,6 +534,66 @@ const UserCard = React.memo(function UserCard({ u, theme, onToggleStatus, onRese
   );
 });
 
+const UserListRow = React.memo(function UserListRow({ u, theme, onToggleStatus, onResendEmail, sendingEmailFor }) {
+  const t = THEMES[theme];
+  const active = u.status === "Active";
+  const id = u.user_id || u.userid;
+  const saving = sendingEmailFor === id;
+  return (
+    <div className="row-hover" style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.6fr) minmax(180px, 1fr) 130px 210px", alignItems: "center", gap: 16, padding: "13px 16px", borderBottom: `1px solid ${t.border}`, minWidth: 820 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+        <div className="brand-gradient" style={{ width: 36, height: 36, borderRadius: "50%", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>
+          {(u.name || "?").charAt(0).toUpperCase()}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: t.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{u.name || "Unnamed"}</div>
+          <div style={{ fontSize: 11.5, color: t.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "'JetBrains Mono', monospace" }}>{u.email || "No email"}</div>
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: t.textMuted }}>{(u.created_at || u.createdat)?.toString().split("T")[0] || "—"}</div>
+      <StatusBadge status={u.status} theme={theme} />
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <GhostButton theme={theme} onClick={() => onToggleStatus(id, u.status)} style={{ padding: "7px 12px", fontSize: 11.5 }}>{active ? "Disable" : "Enable"}</GhostButton>
+        <GhostButton theme={theme} onClick={() => onResendEmail(id)} disabled={saving} style={{ padding: "7px 12px", fontSize: 11.5, color: t.accent }}>{saving ? "Sending..." : "Send email"}</GhostButton>
+      </div>
+    </div>
+  );
+});
+
+function ViewToggle({ value, onChange, theme }) {
+  const t = THEMES[theme];
+  const options = [
+    { key: "grid", label: "Grid", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg> },
+    { key: "list", label: "List", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg> },
+  ];
+  return <div aria-label="View options" style={{ display: "inline-flex", padding: 3, borderRadius: 11, background: t.surfaceGlass, border: `1px solid ${t.border}` }}>
+    {options.map(o => <button key={o.key} onClick={() => onChange(o.key)} aria-pressed={value === o.key} title={`${o.label} view`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 10px", borderRadius: 8, border: "none", cursor: "pointer", background: value === o.key ? t.accentSoft : "transparent", color: value === o.key ? t.accent : t.textMuted, fontSize: 12, fontWeight: 700, fontFamily: "'Inter', sans-serif" }}>{o.icon}{o.label}</button>)}
+  </div>;
+}
+
+function Pagination({ page, totalItems, pageSize, onPageChange, onPageSizeChange, theme, pageSizeOptions = [25, 50, 100] }) {
+  const t = THEMES[theme];
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = totalItems ? (safePage - 1) * pageSize + 1 : 0;
+  const end = Math.min(safePage * pageSize, totalItems);
+  const pageNumbers = Array.from(new Set([1, safePage - 1, safePage, safePage + 1, totalPages])).filter(n => n >= 1 && n <= totalPages).sort((a,b) => a-b);
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "14px 16px", flexWrap: "wrap", borderTop: `1px solid ${t.border}`, background: t.tableHead }}>
+      <div style={{ fontSize: 12, color: t.textMuted }}>Showing <strong style={{ color: t.textPrimary }}>{start}-{end}</strong> of <strong style={{ color: t.textPrimary }}>{totalItems}</strong></div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 11.5, color: t.textMuted }}>Rows</label>
+        <select value={pageSize} onChange={e => onPageSizeChange(Number(e.target.value))} style={{ background: t.inputBg, color: t.textPrimary, border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 8px", outline: "none" }}>
+          {pageSizeOptions.map(size => <option key={size} value={size}>{size}</option>)}
+        </select>
+        <GhostButton theme={theme} disabled={safePage === 1} onClick={() => onPageChange(safePage - 1)} style={{ padding: "7px 10px" }}>Previous</GhostButton>
+        {pageNumbers.map((n, i) => <React.Fragment key={n}>{i > 0 && n - pageNumbers[i-1] > 1 && <span style={{ color: t.textMuted }}>…</span>}<button onClick={() => onPageChange(n)} aria-current={safePage === n ? "page" : undefined} style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${safePage === n ? t.borderAccent : t.border}`, background: safePage === n ? t.accentSoft : t.surfaceGlass, color: safePage === n ? t.accent : t.textSecondary, cursor: "pointer", fontWeight: 700 }}>{n}</button></React.Fragment>)}
+        <GhostButton theme={theme} disabled={safePage === totalPages} onClick={() => onPageChange(safePage + 1)} style={{ padding: "7px 10px" }}>Next</GhostButton>
+      </div>
+    </div>
+  );
+}
+
 const ExamCard = React.memo(function ExamCard({ exam, theme }) {
   const t = THEMES[theme];
   const meta = examStatusMeta(exam.status, t);
@@ -586,73 +646,6 @@ const ExamCard = React.memo(function ExamCard({ exam, theme }) {
   );
 });
 
-/* Live clock hero owns its own 1s interval so the parent never re-renders per second */
-function HeroSection({ theme, user }) {
-  const t = THEMES[theme];
-  const [clock, setClock] = useState(new Date());
-
-  useEffect(() => {
-    const id = setInterval(() => setClock(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const hour = clock.getHours();
-  const greeting = hour < 5 ? "Good night" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : hour < 21 ? "Good evening" : "Good night";
-  const timeText = clock.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const dateText = clock.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
-
-  const cardStyle = {
-    background: t.cardSurface,
-    backdropFilter: "blur(20px)",
-    WebkitBackdropFilter: "blur(20px)",
-    border: `1px solid ${t.border}`,
-    borderRadius: 18,
-    boxShadow: t.name === "light" ? "0 6px 20px rgba(20,28,60,0.07)" : "none",
-  };
-
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.5fr) minmax(0, 1fr)", gap: 20 }}>
-      <div style={{ ...cardStyle, padding: "28px 30px", position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", top: -70, right: -70, width: 220, height: 220, borderRadius: "50%", background: t.accentGradient, opacity: t.name === "light" ? 0.16 : 0.12, filter: "blur(60px)", animation: "floatBlob 18s ease-in-out infinite" }} />
-        <div style={{ position: "relative", zIndex: 1 }}>
-          <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1.4, textTransform: "uppercase", fontWeight: 700, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ display: "inline-block", width: 22, height: 1, background: t.accentGradient }} />
-            {dateText}
-          </div>
-          <h1 style={{ fontSize: 30, fontWeight: 700, margin: 0, marginBottom: 8, color: t.textPrimary, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.8, lineHeight: 1.15 }}>
-            {greeting}
-            {user?.name ? <span className="gradient-text">, {user.name.split(" ")[0]}</span> : null}
-          </h1>
-          <p style={{ fontSize: 14, color: t.textSecondary, margin: 0, lineHeight: 1.6, maxWidth: 540 }}>
-            As an administrator, you create and manage candidate and examiner accounts, and oversee everything happening across the platform — from live assessments to the full audit trail.
-          </p>
-          <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
-            {/* <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 13px", borderRadius: 999, background: t.surfaceGlass, border: `1px solid ${t.border}` }}>
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: t.success, boxShadow: `0 0 6px ${t.success}`, animation: "pulseDot 1.5s ease-in-out infinite" }} />
-              <span style={{ fontSize: 12, color: t.textSecondary, fontWeight: 600 }}>All systems operational</span>
-            </div> */}
-            {/* <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 13px", borderRadius: 999, background: t.surfaceGlass, border: `1px solid ${t.border}` }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={t.textMuted} strokeWidth="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-              <span style={{ fontSize: 12, color: t.textSecondary, fontWeight: 600 }}>Live sync every 4s</span>
-            </div> */}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ ...cardStyle, padding: 26, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center", position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", inset: 0, background: t.accentGradientSoft, opacity: 0.6 }} />
-        <div style={{ position: "relative", zIndex: 1 }}>
-          <div style={{ fontSize: 10.5, color: t.textMuted, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700, marginBottom: 8 }}>Local Time</div>
-          <div className="clock-gradient" style={{ fontSize: 48, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -2 }}>{timeText}</div>
-          <div style={{ fontSize: 13, color: t.textSecondary, marginTop: 8, fontWeight: 500 }}>
-            {clock.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ============= Main ============= */
 
 export default function AdminPanel() {
@@ -678,6 +671,11 @@ export default function AdminPanel() {
   const [createSuccess, setCreateSuccess] = useState("");
   const [rowMessage, setRowMessage] = useState("");
   const [sendingEmailFor, setSendingEmailFor] = useState("");
+  const [userView, setUserView] = useState(() => localStorage.getItem("3rdeyez360.userView") || "grid");
+  const [userPage, setUserPage] = useState(1);
+  const [userPageSize, setUserPageSize] = useState(24);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(25);
 
   const headers = useMemo(() => (accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), [accessToken]);
 
@@ -768,6 +766,8 @@ export default function AdminPanel() {
     setSearch("");
     setExamFilter("all");
     setExamSearch("");
+    setUserPage(1);
+    setAuditPage(1);
     refreshCurrentTab();
   }, [tab, accessToken, refreshCurrentTab]);
 
@@ -881,6 +881,17 @@ export default function AdminPanel() {
     return true;
   });
 
+  const userTotalPages = Math.max(1, Math.ceil(filtered.length / userPageSize));
+  const safeUserPage = Math.min(userPage, userTotalPages);
+  const pagedUsers = filtered.slice((safeUserPage - 1) * userPageSize, safeUserPage * userPageSize);
+  const auditTotalPages = Math.max(1, Math.ceil(auditLogs.length / auditPageSize));
+  const safeAuditPage = Math.min(auditPage, auditTotalPages);
+  const pagedAuditLogs = auditLogs.slice((safeAuditPage - 1) * auditPageSize, safeAuditPage * auditPageSize);
+  const changeUserView = (view) => {
+    setUserView(view);
+    setUserPage(1);
+    try { localStorage.setItem("3rdeyez360.userView", view); } catch (e) {}
+  };
   const activeUsersCount = users.filter((u) => u.status === "Active").length;
   const disabledUsersCount = users.length - activeUsersCount;
 
@@ -1118,7 +1129,6 @@ export default function AdminPanel() {
           {/* ---------------- Dashboard ---------------- */}
           {tab === "Dashboard" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-              <HeroSection theme={theme} user={user} />
 
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
                 <StatOrb theme={theme} label="Total Candidates" value={stats.total_candidates} color={t.accent} gradient={t.accentGradient}
@@ -1255,7 +1265,7 @@ export default function AdminPanel() {
                   </svg>
                   <input
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(e) => { setSearch(e.target.value); setUserPage(1); }}
                     onFocus={() => setSearchFocused(true)}
                     onBlur={() => setSearchFocused(false)}
                     placeholder={`Search ${tab.toLowerCase()} by name or email...`}
@@ -1269,7 +1279,7 @@ export default function AdminPanel() {
                     return (
                       <button
                         key={c.key}
-                        onClick={() => setStatusFilter(c.key)}
+                        onClick={() => { setStatusFilter(c.key); setUserPage(1); }}
                         style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "9px 13px", fontSize: 12, fontWeight: 700, borderRadius: 999, border: `1px solid ${active ? "transparent" : t.border}`, background: active ? `linear-gradient(135deg, ${c.color} 0%, ${c.color}cc 100%)` : t.surfaceGlass, color: active ? "#ffffff" : t.textSecondary, cursor: "pointer", fontFamily: "'Inter', sans-serif", boxShadow: active ? `0 4px 12px ${c.color}55` : "none", transition: "all 0.25s ease" }}
                         onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = t.surfaceGlassHover; }}
                         onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = t.surfaceGlass; }}
@@ -1280,6 +1290,7 @@ export default function AdminPanel() {
                     );
                   })}
                 </div>
+                <ViewToggle value={userView} onChange={changeUserView} theme={theme} />
               </div>
 
               {filtered.length === 0 ? (
@@ -1287,17 +1298,21 @@ export default function AdminPanel() {
                   {users.length === 0 ? `No ${tab.toLowerCase()} yet.` : "No results match your search or filter."}
                 </div>
               ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
-                  {filtered.map((u) => (
-                    <UserCard
-                      key={u.user_id || u.userid}
-                      u={u}
-                      theme={theme}
-                      onToggleStatus={toggleUserStatus}
-                      onResendEmail={resendPasswordEmail}
-                      sendingEmailFor={sendingEmailFor}
-                    />
-                  ))}
+                <div style={userView === "list" ? { ...card, overflow: "hidden" } : {}}>
+                  {userView === "list" && (
+                    <div style={{ overflowX: "auto" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.6fr) minmax(180px, 1fr) 130px 210px", gap: 16, padding: "11px 16px", minWidth: 820, background: t.tableHead, borderBottom: `1px solid ${t.border}`, color: t.textMuted, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase" }}><span>User</span><span>Joined</span><span>Status</span><span style={{ textAlign: "right" }}>Actions</span></div>
+                      {pagedUsers.map((u) => <UserListRow key={u.user_id || u.userid} u={u} theme={theme} onToggleStatus={toggleUserStatus} onResendEmail={resendPasswordEmail} sendingEmailFor={sendingEmailFor} />)}
+                    </div>
+                  )}
+                  {userView === "grid" && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
+                      {pagedUsers.map((u) => <UserCard key={u.user_id || u.userid} u={u} theme={theme} onToggleStatus={toggleUserStatus} onResendEmail={resendPasswordEmail} sendingEmailFor={sendingEmailFor} />)}
+                    </div>
+                  )}
+                  <div style={{ marginTop: userView === "grid" ? 18 : 0, ...card, borderRadius: userView === "grid" ? 14 : 0, border: userView === "grid" ? `1px solid ${t.border}` : "none" }}>
+                    <Pagination page={safeUserPage} totalItems={filtered.length} pageSize={userPageSize} onPageChange={setUserPage} onPageSizeChange={(size) => { setUserPageSize(size); setUserPage(1); }} theme={theme} pageSizeOptions={userView === "grid" ? [12, 24, 48] : [25, 50, 100]} />
+                  </div>
                 </div>
               )}
             </div>
@@ -1378,8 +1393,8 @@ export default function AdminPanel() {
                       </tr>
                     </thead>
                     <tbody>
-                      {auditLogs.map((log, i) => (
-                        <tr key={log.log_id || log.audit_id || i} className="row-hover" style={{ borderBottom: i < auditLogs.length - 1 ? `1px solid ${t.border}` : "none" }}>
+                      {pagedAuditLogs.map((log, i) => (
+                        <tr key={log.log_id || log.audit_id || i} className="row-hover" style={{ borderBottom: i < pagedAuditLogs.length - 1 ? `1px solid ${t.border}` : "none" }}>
                           <td style={{ padding: "12px 16px", fontSize: 12, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
                             {log.timestamp ? new Date(log.timestamp).toLocaleString() : "—"}
                           </td>
@@ -1404,6 +1419,7 @@ export default function AdminPanel() {
                     </tbody>
                   </table>
                 </div>
+                <Pagination page={safeAuditPage} totalItems={auditLogs.length} pageSize={auditPageSize} onPageChange={setAuditPage} onPageSizeChange={(size) => { setAuditPageSize(size); setAuditPage(1); }} theme={theme} />
               </div>
             </div>
           )}
@@ -1482,4 +1498,4 @@ export default function AdminPanel() {
       )}
     </div>
   );
-}
+} 
