@@ -1387,7 +1387,7 @@ export default function AdminPanel() {
                   <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
                     <thead>
                       <tr style={{ background: t.tableHead, borderBottom: `1px solid ${t.border}` }}>
-                        {["Timestamp", "User", "Name", "Action", "Reason"].map((h) => (
+                        {["Timestamp", "User ID", "Name", "Action", "Reason"].map((h) => (
                           <th key={h} style={th}>{h}</th>
                         ))}
                       </tr>

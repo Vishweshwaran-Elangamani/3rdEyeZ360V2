@@ -1523,8 +1523,8 @@ async def unassign_candidate(
             "action": "UnassignCandidate",
             "reason": (
                 f"Removed candidate "
-                f"{candidate_id} from exam "
-                f"{exam_id}"
+                f"{(candidate or {}).get('name') or candidate_id} from exam "
+                f"{exam.get('name') or exam_id}"
             ),
             "timestamp": now,
         }
@@ -1815,7 +1815,7 @@ async def assign_candidates_bulk(
             "candidate_id": candidate_id,
             "candidateid": candidate_id,
             "action": "AssignCandidate",
-            "reason": f"Bulk assigned candidate {candidate_id}",
+            "reason": f"Bulk assigned candidate {user.get('name') or candidate_id}",
             "timestamp": now,
         })
         payload = _merge_exam_assessment(exam or {}, assessment_document)
@@ -2033,7 +2033,7 @@ async def assign_candidate(
             "candidateid": candidate_id,
             "action": "AssignCandidate",
             "reason": (
-                f"Assigned candidate {candidate_id}"
+                f"Assigned candidate {user.get('name') or candidate_id}"
             ),
             "timestamp": now,
         }
