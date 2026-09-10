@@ -2476,6 +2476,8 @@ export default function ExaminerDashboard() {
   const [extendTimeOpen, setExtendTimeOpen] = useState(false);
   const [extendTimeInput, setExtendTimeInput] = useState("");
   const [extendTimeSaving, setExtendTimeSaving] = useState(false);
+  const [reduceTimeInput, setReduceTimeInput] = useState("");
+  const [reduceTimeSaving, setReduceTimeSaving] = useState(false);
   const extendTimeMenuRef = useRef(null);
 
   const headers = useMemo(
@@ -2525,7 +2527,7 @@ export default function ExaminerDashboard() {
   const isMultiSessionExam = selectedExam?.examtype === "MULTI_SESSION";
   const stopMode = String(selectedExam?.stopmode ?? selectedExam?.stop_mode ?? "BOTH").toUpperCase();
   const manualSessionEndAllowed = stopMode !== "AUTOMATIC";
-  const sessionModeLocked = !isExamRunning;
+
   const sessionExtensionMinutes = Number(selectedExam?.timeextensionminutes ?? 0) || 0;
   const deadlineMs = parseServerDateMs(
     selectedExam?.sessiondeadlineat ?? selectedExam?.session_deadline_at,
@@ -2535,6 +2537,8 @@ export default function ExaminerDashboard() {
   );
   const fallbackDeadlineMs = fallbackStartMs > 0 ? fallbackStartMs + (Number(selectedExam?.durationminutes || 0) + sessionExtensionMinutes) * 60000 : 0;
   const effectiveDeadlineMs = Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : fallbackDeadlineMs;
+  const sessionDeadlineExpired = isExamRunning && effectiveDeadlineMs > 0 && clock.getTime() >= effectiveDeadlineMs;
+  const sessionModeLocked = !isExamRunning || sessionDeadlineExpired;
   const sessionRemainingMs = isExamRunning && effectiveDeadlineMs > 0 ? Math.max(0, effectiveDeadlineMs - clock.getTime()) : 0;
   const sessionSeconds = Math.ceil(sessionRemainingMs / 1000);
   const sessionTimerText = `${String(Math.floor(sessionSeconds / 3600)).padStart(2, "0")}:${String(Math.floor((sessionSeconds % 3600) / 60)).padStart(2, "0")}:${String(sessionSeconds % 60).padStart(2, "0")}`;
@@ -3168,9 +3172,27 @@ export default function ExaminerDashboard() {
     } catch (error) { const message = error?.response?.data?.detail || error?.message || "Time extension failed."; setActionMsg(`Time extension failed: ${message}`); setTimeout(() => setActionMsg(""), 4500); }
     finally { setExtendTimeSaving(false); }
   };
+  const reduceSessionTime = async (minutes) => {
+    if (!isExamRunning) { setExtendTimeOpen(false); setActionMsg("The session is no longer running. Time can no longer be reduced."); setTimeout(() => setActionMsg(""), 4500); return; }
+    const value = Number(minutes);
+    if (!Number.isInteger(value) || value < 1) { setActionMsg("Enter a positive whole number of minutes."); setTimeout(() => setActionMsg(""), 3500); return; }
+    if (value * 60000 >= sessionRemainingMs) { setActionMsg("Cannot reduce more time than the session currently has remaining."); setTimeout(() => setActionMsg(""), 4500); return; }
+    setReduceTimeSaving(true);
+    try {
+      const response = await axios.patch(`${API}/api/exams/${selectedExamId}/reduce-time`, { minutes: value }, { headers });
+      const updated = normalizeExam(response.data?.exam ?? response.data);
+      setSelectedExam((previous) => ({ ...(previous || {}), ...updated }));
+      setExams((previous) => previous.map((item) => item.examid === updated.examid ? { ...item, ...updated } : item));
+      setActionMsg(`${value} minute${value === 1 ? "" : "s"} reduced from the current session`);
+      setTimeout(() => setActionMsg(""), 3500); setReduceTimeInput(""); setExtendTimeOpen(false);
+    } catch (error) { const message = error?.response?.data?.detail || error?.message || "Time reduction failed."; setActionMsg(`Time reduction failed: ${message}`); setTimeout(() => setActionMsg(""), 4500); }
+    finally { setReduceTimeSaving(false); }
+  };
   const showStopModeLockedMessage = () => {
     setStopModeOpen(false);
-    setActionMsg("The session is no longer running. The ending mode cannot be changed.");
+    setActionMsg(sessionDeadlineExpired
+      ? "Session time has ended. The ending mode can no longer be changed."
+      : "The session is no longer running. The ending mode cannot be changed.");
     setTimeout(() => setActionMsg(""), 4500);
   };
   const updateStopMode = async (nextMode) => {
@@ -4700,11 +4722,16 @@ export default function ExaminerDashboard() {
               <button type="button" onClick={() => isExamRunning ? setExtendTimeOpen((open) => !open) : void extendSessionTime(0)} style={{ height: 40, minWidth: 142, padding: "0 8px 0 11px", borderRadius: 10, border: `1px solid ${extendTimeOpen ? t.borderAccent : t.border}`, background: extendTimeOpen ? t.surfaceGlassHover : t.surfaceGlass, color: sessionRemainingMs <= 300000 ? t.warning : t.textPrimary, display: "inline-flex", alignItems: "center", gap: 8, cursor: isExamRunning ? "pointer" : "not-allowed", opacity: isExamRunning ? 1 : 0.62, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 800 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg><span>{sessionTimerText}</span><span style={{ marginLeft: "auto", width: 22, height: 22, borderRadius: 7, display: "inline-flex", alignItems: "center", justifyContent: "center", background: t.accentSoft, color: t.accent, fontSize: 16 }}>+</span>
               </button>
-              {extendTimeOpen ? <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10000, width: 232, padding: 10, borderRadius: 12, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: "0 18px 44px rgba(0,0,0,0.5)" }}>
-                <div style={{ color: t.textPrimary, fontSize: 12, fontWeight: 800, marginBottom: 8 }}>Extend current session</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>{[5,10,15].map((m) => <button key={m} disabled={extendTimeSaving} onClick={() => void extendSessionTime(m)} style={{ height: 34, borderRadius: 8, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.accent, cursor: "pointer", fontWeight: 800 }}>+{m}</button>)}</div>
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}><input type="number" min="1" step="1" value={extendTimeInput} onChange={(e) => setExtendTimeInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void extendSessionTime(extendTimeInput); }} placeholder="Custom min" style={{ width: 0, flex: 1, height: 34, padding: "0 9px", borderRadius: 8, border: `1px solid ${t.border}`, background: t.inputBg, color: t.textPrimary }}/><button disabled={extendTimeSaving} onClick={() => void extendSessionTime(extendTimeInput)} style={{ border: 0, borderRadius: 8, padding: "0 11px", background: t.accentGradient, color: "#fff", fontWeight: 800 }}>{extendTimeSaving ? "..." : "Add"}</button></div>
-                {sessionExtensionMinutes > 0 ? <div style={{ marginTop: 8, color: t.textMuted, fontSize: 10 }}>Added this session: +{sessionExtensionMinutes} min</div> : null}
+              {extendTimeOpen ? <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10000, width: 252, padding: 10, borderRadius: 12, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: "0 18px 44px rgba(0,0,0,0.5)" }}>
+                <div style={{ color: t.textPrimary, fontSize: 12, fontWeight: 800, marginBottom: 8 }}>Adjust current session</div>
+                <div style={{ color: t.textMuted, fontSize: 9, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", marginBottom: 6 }}>Add time</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>{[5,10,15].map((m) => <button key={`add-${m}`} disabled={extendTimeSaving || reduceTimeSaving} onClick={() => void extendSessionTime(m)} style={{ height: 34, borderRadius: 8, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.accent, cursor: "pointer", fontWeight: 800 }}>+{m}</button>)}</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}><input type="number" min="1" step="1" value={extendTimeInput} disabled={extendTimeSaving || reduceTimeSaving} onChange={(e) => setExtendTimeInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void extendSessionTime(extendTimeInput); }} placeholder="Custom min" style={{ width: 0, flex: 1, height: 34, padding: "0 9px", borderRadius: 8, border: `1px solid ${t.border}`, background: t.inputBg, color: t.textPrimary }}/><button disabled={extendTimeSaving || reduceTimeSaving} onClick={() => void extendSessionTime(extendTimeInput)} style={{ border: 0, borderRadius: 8, padding: "0 11px", background: t.accentGradient, color: "#fff", fontWeight: 800 }}>{extendTimeSaving ? "..." : "Add"}</button></div>
+                <div style={{ height: 1, background: t.border, margin: "10px 0" }} />
+                <div style={{ color: t.textMuted, fontSize: 9, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", marginBottom: 6 }}>Reduce time</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>{[1,5,10].map((m) => <button key={`reduce-${m}`} disabled={extendTimeSaving || reduceTimeSaving || m * 60000 >= sessionRemainingMs} onClick={() => void reduceSessionTime(m)} style={{ height: 34, borderRadius: 8, border: `1px solid ${t.danger}55`, background: t.dangerBg, color: t.danger, cursor: m * 60000 >= sessionRemainingMs ? "not-allowed" : "pointer", opacity: m * 60000 >= sessionRemainingMs ? 0.45 : 1, fontWeight: 800 }}>-{m}</button>)}</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}><input type="number" min="1" step="1" value={reduceTimeInput} disabled={extendTimeSaving || reduceTimeSaving} onChange={(e) => setReduceTimeInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void reduceSessionTime(reduceTimeInput); }} placeholder="Custom min" style={{ width: 0, flex: 1, height: 34, padding: "0 9px", borderRadius: 8, border: `1px solid ${t.danger}55`, background: t.inputBg, color: t.textPrimary }}/><button disabled={extendTimeSaving || reduceTimeSaving} onClick={() => void reduceSessionTime(reduceTimeInput)} style={{ border: 0, borderRadius: 8, padding: "0 11px", background: t.dangerGradient, color: "#fff", fontWeight: 800 }}>{reduceTimeSaving ? "..." : "Reduce"}</button></div>
+                {sessionExtensionMinutes !== 0 ? <div style={{ marginTop: 8, color: t.textMuted, fontSize: 10 }}>Net adjustment this session: {sessionExtensionMinutes > 0 ? "+" : ""}{sessionExtensionMinutes} min</div> : null}
               </div> : null}
             </div>
             <div ref={stopModeMenuRef} style={{ position: "relative", zIndex: 220, flexShrink: 0 }}>

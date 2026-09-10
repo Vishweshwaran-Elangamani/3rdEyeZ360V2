@@ -328,6 +328,14 @@ def _merge_exam_into_assessment(assessment: dict, exam: dict | None) -> dict:
         assessment.get("durationminutes", exam_data.get("duration_minutes", exam_data.get("durationminutes", 0))),
     )
     data["durationminutes"] = data["duration_minutes"]
+    extension_minutes = int(exam_data.get("timeextensionminutes", exam_data.get("time_extension_minutes", 0)) or 0)
+    data["timeextensionminutes"] = extension_minutes
+    data["time_extension_minutes"] = extension_minutes
+    deadline = exam_data.get("sessiondeadlineat", exam_data.get("session_deadline_at"))
+    data["sessiondeadlineat"] = deadline
+    data["session_deadline_at"] = deadline
+    data["startedat"] = exam_data.get("startedat", exam_data.get("started_at"))
+    data["started_at"] = data["startedat"]
     data["violation_threshold"] = assessment.get(
         "violation_threshold",
         assessment.get("violationthreshold", exam_data.get("violation_threshold", exam_data.get("violationthreshold", 10))),
@@ -1171,8 +1179,31 @@ async def enter_assessment(assessment_id: str, body: EnterAssessmentBody, curren
     await db.assessments.update_one(_assessment_query(assessment_id), {"$set": update})
     updated = await _get_assessment_doc(db, assessment_id)
     payload = _merge_exam_into_assessment(updated, exam)
+    exam_payload = _serialize(exam)
+    exam_payload.update({
+        "examid": exam_id,
+        "exam_id": exam_id,
+        "status": exam_status,
+        "examstatus": exam_status,
+        "exam_status": exam_status,
+        "durationminutes": exam.get("durationminutes", exam.get("duration_minutes", 0)),
+        "duration_minutes": exam.get("duration_minutes", exam.get("durationminutes", 0)),
+        "timeextensionminutes": int(exam.get("timeextensionminutes", exam.get("time_extension_minutes", 0)) or 0),
+        "time_extension_minutes": int(exam.get("time_extension_minutes", exam.get("timeextensionminutes", 0)) or 0),
+        "sessiondeadlineat": exam.get("sessiondeadlineat", exam.get("session_deadline_at")),
+        "session_deadline_at": exam.get("session_deadline_at", exam.get("sessiondeadlineat")),
+        "startedat": exam.get("startedat", exam.get("started_at")),
+        "started_at": exam.get("started_at", exam.get("startedat")),
+    })
     await emit_assessment_event("assessment_updated", payload)
-    return {"success": True, "waiting": False, "sessionid": session_id, "session_id": session_id, "assessment": payload}
+    return {
+        "success": True,
+        "waiting": False,
+        "sessionid": session_id,
+        "session_id": session_id,
+        "assessment": payload,
+        "exam": exam_payload,
+    }
 
 
 @router.post("/{assessment_id}/heartbeat")

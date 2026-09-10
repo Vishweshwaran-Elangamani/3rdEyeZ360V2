@@ -938,6 +938,48 @@ async def extend_exam_time(exam_id: str, body: dict, current_user=Depends(requir
     await emit_exam_event("exam_updated", payload)
     return {"message": f"Added {added} minute(s)", "exam": payload, **payload}
 
+@router.patch("/{exam_id}/reduce-time")
+async def reduce_exam_time(exam_id: str, body: dict, current_user=Depends(require_role("Examiner", "Admin"))):
+    db = get_db()
+    exam = await _ensure_exam_access(db, exam_id, current_user)
+    actor_id = current_user.get("user_id") or current_user.get("userid")
+    if _normalize_status(exam.get("status") or exam.get("examstatus")) != "RUNNING":
+        raise HTTPException(status_code=409, detail="The session is no longer running. Time can no longer be reduced.")
+    raw = body.get("minutes", body.get("reduction_minutes", body.get("reductionminutes")))
+    if raw is None:
+        raise HTTPException(status_code=400, detail="minutes is required")
+    reduced = _validate_extension_minutes(raw)
+    now = datetime.utcnow()
+    deadline = exam.get("sessiondeadlineat", exam.get("session_deadline_at"))
+    if not isinstance(deadline, datetime):
+        raise HTTPException(status_code=409, detail="The current session deadline is unavailable.")
+    remaining_seconds = (deadline - now).total_seconds()
+    reduction_seconds = reduced * 60
+    if remaining_seconds <= 0:
+        raise HTTPException(status_code=409, detail="Session time has already ended. Time can no longer be reduced.")
+    if reduction_seconds >= remaining_seconds:
+        raise HTTPException(status_code=409, detail="Cannot reduce more time than the session currently has remaining.")
+    new_deadline = deadline - timedelta(minutes=reduced)
+    previous_extension = int(exam.get("timeextensionminutes", exam.get("time_extension_minutes", 0)) or 0)
+    net_extension = previous_extension - reduced
+    await db.exams.update_one(_get_exam_query(exam_id), {"$set": {
+        "time_extension_minutes": net_extension, "timeextensionminutes": net_extension,
+        "session_deadline_at": new_deadline, "sessiondeadlineat": new_deadline,
+        "updated_at": now, "updatedat": now,
+    }})
+    await db.audit_logs.insert_one({
+        "log_id": f"AUD-{uuid.uuid4().hex[:8].upper()}", "user_id": actor_id, "userid": actor_id,
+        "exam_id": exam_id, "examid": exam_id, "action": "ReduceSessionTime",
+        "reason": f"Reduced {reduced} minute(s) from the current running session",
+        "reduced_minutes": reduced, "net_time_adjustment_minutes": net_extension,
+        "session_number": int(exam.get("sessionnumber", exam.get("session_number", 0)) or 0), "timestamp": now,
+    })
+    updated = await db.exams.find_one(_get_exam_query(exam_id))
+    payload = _exam_payload(updated)
+    await emit_exam_event("exam_updated", payload)
+    return {"message": f"Reduced {reduced} minute(s)", "exam": payload, **payload}
+
+
 @router.patch("/{exam_id}/stop-mode")
 async def update_stop_mode(exam_id: str, body: dict, current_user=Depends(require_role("Examiner", "Admin"))):
     db = get_db()
@@ -948,6 +990,12 @@ async def update_stop_mode(exam_id: str, body: dict, current_user=Depends(requir
         raise HTTPException(
             status_code=409,
             detail="The ending mode can only be changed while the exam session is running.",
+        )
+    deadline = exam.get("sessiondeadlineat", exam.get("session_deadline_at"))
+    if isinstance(deadline, datetime) and datetime.utcnow() >= deadline:
+        raise HTTPException(
+            status_code=409,
+            detail="Session time has ended. The ending mode can no longer be changed.",
         )
     raw_mode = body.get("stop_mode", body.get("stopmode"))
     if raw_mode is None:

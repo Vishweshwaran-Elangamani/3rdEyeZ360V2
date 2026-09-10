@@ -559,6 +559,15 @@ function normalizeSites(...sources) {
   }
   return Array.from(unique);
 }
+function parseServerDateMs(value) {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  const text = String(value).trim();
+  if (!text) return 0;
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+  const timestamp = new Date(hasTimezone ? text : `${text}Z`).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
 function normalizeExam(raw) {
   if (!raw) return null;
   const status = toUpper(pick(raw.examstatus, raw.exam_status, raw.status, ""));
@@ -1167,8 +1176,23 @@ try {
           setNow(Date.now());
         }
 clearWaitingSession();
+        if (response.data?.exam) {
+          setLiveExam(normalizeExam(response.data.exam));
+        }
         if (response.data?.assessment) {
-          setLiveAssessment(normalizeAssessment(response.data.assessment));
+          const enteredAssessment = normalizeAssessment(response.data.assessment);
+          setLiveAssessment(enteredAssessment);
+          if (!response.data?.exam && enteredAssessment?.sessiondeadlineat) {
+            setLiveExam((previous) => ({
+              ...(previous || {}),
+              examid: examId,
+              status: "RUNNING",
+              examstatus: "RUNNING",
+              durationminutes: enteredAssessment.durationminutes,
+              timeextensionminutes: enteredAssessment.timeextensionminutes,
+              sessiondeadlineat: enteredAssessment.sessiondeadlineat,
+            }));
+          }
         }
         setStatusMsg("Secured assessment session created.");
         setBrowserError("");
@@ -1573,7 +1597,17 @@ setPauseLocked(false);
       const latestExam = normalizeExam(examRes?.data);
       const latestAssessment = normalizeAssessment(assessmentRes?.data);
       if (latestExam) setLiveExam(latestExam);
-      if (latestAssessment) setLiveAssessment(latestAssessment);
+      if (latestAssessment) {
+        setLiveAssessment(latestAssessment);
+        if (latestAssessment.sessiondeadlineat) {
+          setLiveExam((previous) => ({
+            ...(previous || {}),
+            sessiondeadlineat: latestAssessment.sessiondeadlineat,
+            timeextensionminutes: latestAssessment.timeextensionminutes,
+            durationminutes: latestAssessment.durationminutes,
+          }));
+        }
+      }
 
       const examStatusValue = getExamStatus(latestExam);
       const assessmentStatusValue = getAssessmentStatus(latestAssessment);
@@ -1674,17 +1708,26 @@ setPauseLocked(false);
   const extensionMinutes = Number(pick(liveExam?.timeextensionminutes, liveExam?.time_extension_minutes, normalizedExam?.timeextensionminutes, 0) || 0);
   const durationMinutes = Math.max(0, baseDurationMinutes + extensionMinutes);
   const totalMs = durationMinutes > 0 ? durationMinutes * 60 * 1000 : 0;
-  const deadlineValue = pick(liveExam?.sessiondeadlineat, liveExam?.session_deadline_at, normalizedExam?.sessiondeadlineat);
-  const authoritativeDeadlineMs = deadlineValue ? new Date(deadlineValue).getTime() : 0;
-  // Continuous countdown from the original candidate-entry timestamp.
-  // Refresh, pause, resume, and component remount do not stop or reset time.
+  const deadlineValue = pick(
+    liveExam?.sessiondeadlineat,
+    liveExam?.session_deadline_at,
+    normalizedExam?.sessiondeadlineat,
+    normalizedExam?.session_deadline_at,
+    liveAssessment?.sessiondeadlineat,
+    liveAssessment?.session_deadline_at,
+  );
+  const authoritativeDeadlineMs = parseServerDateMs(deadlineValue);
+  // The shared exam-session deadline is authoritative. Candidate entry time is
+  // retained only as a legacy fallback when an older exam has no deadline.
   const elapsedMs = timerStartedAtRef.current
     ? Math.max(0, now - timerStartedAtRef.current)
     : 0;
-  const remainingMs = Number.isFinite(authoritativeDeadlineMs) && authoritativeDeadlineMs > 0
+  const remainingMs = authoritativeDeadlineMs > 0
     ? Math.max(0, authoritativeDeadlineMs - now)
     : totalMs > 0
-      ? timerStartedAtRef.current ? Math.max(0, totalMs - elapsedMs) : totalMs
+      ? timerStartedAtRef.current
+        ? Math.max(0, totalMs - elapsedMs)
+        : totalMs
       : 0;
 
   const fiveMinuteThresholdMs = 5 * 60 * 1000;
