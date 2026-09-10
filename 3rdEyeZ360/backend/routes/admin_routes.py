@@ -24,4 +24,29 @@ async def get_stats(current_user=Depends(require_role("Admin"))):
 async def get_audit_logs(current_user=Depends(require_role("Admin"))):
     db = get_db()
     logs = await db.audit_logs.find().sort("timestamp", -1).limit(200).to_list(None)
-    return [_serialize(log) for log in logs]
+    user_ids = {
+        str(log.get("user_id") or log.get("userid") or "").strip()
+        for log in logs
+    }
+    user_ids.discard("")
+    users = await db.users.find(
+        {"$or": [
+            {"user_id": {"$in": list(user_ids)}},
+            {"userid": {"$in": list(user_ids)}},
+        ]},
+        {"_id": 0, "user_id": 1, "userid": 1, "name": 1},
+    ).to_list(None) if user_ids else []
+    names_by_id = {
+        str(user.get("user_id") or user.get("userid") or "").strip():
+            str(user.get("name") or "").strip()
+        for user in users
+    }
+    result = []
+    for log in logs:
+        payload = _serialize(log)
+        user_id = str(log.get("user_id") or log.get("userid") or "").strip()
+        user_name = names_by_id.get(user_id) or "Unknown User"
+        payload["user_name"] = user_name
+        payload["username"] = user_name
+        result.append(payload)
+    return result

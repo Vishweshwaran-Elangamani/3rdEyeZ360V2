@@ -1384,10 +1384,10 @@ export default function AdminPanel() {
               <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, color: t.textPrimary, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.5 }}>Audit Logs</h2>
               <div style={card}>
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
                     <thead>
                       <tr style={{ background: t.tableHead, borderBottom: `1px solid ${t.border}` }}>
-                        {["Timestamp", "User", "Action", "Reason"].map((h) => (
+                        {["Timestamp", "User", "Name", "Action", "Reason"].map((h) => (
                           <th key={h} style={th}>{h}</th>
                         ))}
                       </tr>
@@ -1401,6 +1401,9 @@ export default function AdminPanel() {
                           <td style={{ padding: "12px 16px", fontSize: 13, color: t.textPrimary, fontFamily: "'JetBrains Mono', monospace" }}>
                             {safeText(log.user_id || log.userid || "—")}
                           </td>
+                          <td style={{ padding: "12px 16px", fontSize: 13, color: t.textPrimary, fontWeight: 600 }}>
+                            {safeText(log.user_name || log.username || "Unknown User")}
+                          </td>
                           <td style={{ padding: "12px 16px", fontSize: 13 }}>
                             <span style={{ color: t.accent, fontWeight: 600 }}>{safeText(log.action)}</span>
                           </td>
@@ -1411,7 +1414,7 @@ export default function AdminPanel() {
                       ))}
                       {auditLogs.length === 0 && (
                         <tr>
-                          <td colSpan={4} style={{ padding: 44, textAlign: "center", color: t.textMuted, fontSize: 13.5 }}>
+                          <td colSpan={5} style={{ padding: 44, textAlign: "center", color: t.textMuted, fontSize: 13.5 }}>
                             No audit logs yet.
                           </td>
                         </tr>
