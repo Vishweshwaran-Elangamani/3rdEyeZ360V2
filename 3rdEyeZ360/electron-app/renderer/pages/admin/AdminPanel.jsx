@@ -665,6 +665,14 @@ export default function AdminPanel() {
   const [examFilter, setExamFilter] = useState("all");
   const [examSearch, setExamSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkFileBase64, setBulkFileBase64] = useState("");
+  const [bulkRows, setBulkRows] = useState([]);
+  const [bulkSummary, setBulkSummary] = useState(null);
+  const [bulkError, setBulkError] = useState("");
+  const [bulkValidating, setBulkValidating] = useState(false);
+  const [bulkCreating, setBulkCreating] = useState(false);
   const [newUser, setNewUser] = useState({ first_name: "", last_name: "", email: "", role: "Candidate" });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -872,6 +880,60 @@ export default function AdminPanel() {
     }
   };
 
+  const resetBulkUpload = () => {
+    setBulkFile(null);
+    setBulkFileBase64("");
+    setBulkRows([]);
+    setBulkSummary(null);
+    setBulkError("");
+  };
+  const encodeFileBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+    reader.onerror = () => reject(new Error("Unable to read the selected file"));
+    reader.readAsDataURL(file);
+  });
+  const validateBulkFile = async (file) => {
+    if (!file) return;
+    const extension = file.name.toLowerCase().split(".").pop();
+    if (!["csv", "xlsx"].includes(extension)) {
+      setBulkError("Only CSV and XLSX files are supported.");
+      return;
+    }
+    setBulkValidating(true);
+    setBulkError("");
+    setBulkSummary(null);
+    try {
+      const contentBase64 = await encodeFileBase64(file);
+      const response = await axios.post(`${API}/api/users/bulk/validate`, { filename: file.name, content_base64: contentBase64 }, { headers });
+      setBulkFile(file);
+      setBulkFileBase64(contentBase64);
+      setBulkRows(response.data?.rows || []);
+      setBulkSummary({ total: response.data?.total || 0, valid: response.data?.valid || 0, invalid: response.data?.invalid || 0 });
+    } catch (error) {
+      resetBulkUpload();
+      setBulkError(extractErrorMessage(error, "Unable to validate the selected file"));
+    } finally {
+      setBulkValidating(false);
+    }
+  };
+  const createBulkUsers = async () => {
+    if (!bulkFile || !bulkFileBase64 || !bulkSummary?.valid) return;
+    setBulkCreating(true);
+    setBulkError("");
+    try {
+      const response = await axios.post(`${API}/api/users/bulk/create`, { filename: bulkFile.name, content_base64: bulkFileBase64 }, { headers });
+      const results = response.data?.results || [];
+      setBulkRows(results);
+      setBulkSummary({ total: response.data?.total || 0, created: response.data?.created || 0, failed: response.data?.failed || 0, complete: true });
+      await loadStats();
+      await loadUsers(tab === "Examiners" ? "Examiner" : "Candidate");
+    } catch (error) {
+      setBulkError(extractErrorMessage(error, "Bulk user creation failed"));
+    } finally {
+      setBulkCreating(false);
+    }
+  };
   const filtered = users.filter((u) => {
     const q = search.toLowerCase();
     const matchesSearch = !q || u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q);
@@ -1236,6 +1298,11 @@ export default function AdminPanel() {
                   </h2>
                   <p style={{ fontSize: 12.5, color: t.textMuted, margin: "4px 0 0" }}>Create, search and manage {tab.toLowerCase()}.</p>
                 </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <GhostButton theme={theme} onClick={() => { resetBulkUpload(); setShowBulkUpload(true); }} style={{ padding: "10px 16px", color: t.accent }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  Bulk Upload Users
+                </GhostButton>
                 <GradientButton
                   theme={theme}
                   onClick={() => {
@@ -1249,6 +1316,7 @@ export default function AdminPanel() {
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                   Create {tab === "Examiners" ? "Examiner" : "Candidate"}
                 </GradientButton>
+                </div>
               </div>
 
               {rowMessage && (
@@ -1429,6 +1497,35 @@ export default function AdminPanel() {
         </div>
       </div>
 
+      {showBulkUpload && (
+        <div onMouseDown={(event) => { if (event.target === event.currentTarget && !bulkCreating && !bulkValidating) setShowBulkUpload(false); }} style={{ position: "fixed", inset: 0, background: t.overlay, backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+          <div style={{ width: "100%", maxWidth: 860, maxHeight: "86vh", overflow: "hidden", display: "flex", flexDirection: "column", background: t.surfaceElevated, border: `1px solid ${t.borderStrong}`, borderRadius: 20, boxShadow: "0 30px 80px rgba(0,0,0,0.45)" }}>
+            <div style={{ padding: "22px 24px 16px", borderBottom: `1px solid ${t.border}` }}>
+              <h3 style={{ margin: 0, color: t.textPrimary, fontSize: 19, fontFamily: "'Space Grotesk', sans-serif" }}>Bulk Upload Users</h3>
+              <div style={{ marginTop: 6, color: t.textMuted, fontSize: 12.5 }}>Upload CSV or XLSX with first_name, last_name, email and role. Each created user receives the existing password setup email.</div>
+            </div>
+            <div style={{ padding: 24, overflowY: "auto", minHeight: 0 }}>
+              {bulkError && <div style={{ marginBottom: 14, padding: "10px 12px", borderRadius: 10, background: t.dangerBg, border: `1px solid ${t.danger}55`, color: t.danger, fontSize: 12.5, fontWeight: 600 }}>{bulkError}</div>}
+              <label style={{ minHeight: 118, borderRadius: 14, border: `1px dashed ${t.borderAccent}`, background: t.accentSoft, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: t.accent, cursor: bulkValidating ? "wait" : "pointer" }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <strong>{bulkValidating ? "Validating file..." : bulkFile?.name || "Choose CSV or Excel file"}</strong>
+                <span style={{ color: t.textMuted, fontSize: 11 }}>Required columns: first_name, last_name, email, role</span>
+                <input type="file" accept=".csv,.xlsx" disabled={bulkValidating || bulkCreating} onChange={(event) => void validateBulkFile(event.target.files?.[0])} style={{ display: "none" }} />
+              </label>
+              {bulkSummary && <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>{[
+                ["Total", bulkSummary.total, t.info],
+                [bulkSummary.complete ? "Created" : "Valid", bulkSummary.complete ? bulkSummary.created : bulkSummary.valid, t.success],
+                [bulkSummary.complete ? "Failed" : "Invalid", bulkSummary.complete ? bulkSummary.failed : bulkSummary.invalid, t.danger],
+              ].map(([label, value, color]) => <div key={label} style={{ padding: "7px 11px", borderRadius: 999, background: `${color}18`, border: `1px solid ${color}44`, color, fontSize: 11.5, fontWeight: 800 }}>{label}: {value}</div>)}</div>}
+              {bulkRows.length > 0 && <div style={{ marginTop: 14, border: `1px solid ${t.border}`, borderRadius: 12, overflow: "hidden" }}><div style={{ overflowX: "auto", maxHeight: 310 }}><table style={{ width: "100%", minWidth: 720, borderCollapse: "collapse" }}><thead><tr style={{ background: t.tableHead }}>{["Row", "Name", "Email", "Role", "Status"].map((heading) => <th key={heading} style={{ ...th, position: "sticky", top: 0, background: t.tableHead }}>{heading}</th>)}</tr></thead><tbody>{bulkRows.map((row) => <tr key={`${row.row}-${row.email}`} style={{ borderTop: `1px solid ${t.border}` }}><td style={{ padding: "10px 16px", color: t.textMuted, fontSize: 12 }}>{row.row}</td><td style={{ padding: "10px 16px", color: t.textPrimary, fontSize: 12.5 }}>{row.name || "—"}</td><td style={{ padding: "10px 16px", color: t.textSecondary, fontSize: 12 }}>{row.email || "—"}</td><td style={{ padding: "10px 16px", color: t.textSecondary, fontSize: 12 }}>{row.role || "—"}</td><td style={{ padding: "10px 16px", color: row.valid && row.status !== "failed" ? t.success : t.danger, fontSize: 11.5, fontWeight: 700 }}>{row.status === "created" ? "Created" : row.valid ? "Valid" : (row.message || row.errors?.join("; ") || "Invalid")}</td></tr>)}</tbody></table></div></div>}
+            </div>
+            <div style={{ padding: "14px 24px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${t.border}` }}>
+              <GhostButton theme={theme} disabled={bulkCreating || bulkValidating} onClick={() => setShowBulkUpload(false)}>Close</GhostButton>
+              {!bulkSummary?.complete && <GradientButton theme={theme} disabled={bulkCreating || bulkValidating || !bulkSummary?.valid} onClick={createBulkUsers}>{bulkCreating ? "Creating users..." : `Create ${bulkSummary?.valid || 0} Valid Users`}</GradientButton>}
+            </div>
+          </div>
+        </div>
+      )}
       {/* ---------------- Create User Modal ---------------- */}
       {showCreate && (
         <div
@@ -1501,4 +1598,4 @@ export default function AdminPanel() {
       )}
     </div>
   );
-} 
+}
