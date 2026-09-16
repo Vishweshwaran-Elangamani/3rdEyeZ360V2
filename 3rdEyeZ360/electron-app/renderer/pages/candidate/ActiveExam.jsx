@@ -651,6 +651,19 @@ function safeHost(url) {
   }
 }
 
+function formatViolationLabel(value) {
+  const raw = String(value || "Violation").trim();
+  return raw
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+function formatViolationTime(value) {
+  if (!value) return "—";
+  const timestamp = parseServerDateMs(value);
+  return timestamp > 0 ? new Date(timestamp).toLocaleString() : "—";
+}
 /* ============= Status chip ============= */
 
 function StatusChip({ status, theme, label }) {
@@ -769,6 +782,12 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
   const [statusMsg, setStatusMsg] = useState("");
   const [allowedSitesOpen, setAllowedSitesOpen] = useState(false);
   const [fiveMinuteAlertOpen, setFiveMinuteAlertOpen] = useState(false);
+  const [violationsOpen, setViolationsOpen] = useState(false);
+  const [candidateViolations, setCandidateViolations] = useState([]);
+  const [violationCount, setViolationCount] = useState(0);
+  const [violationLimit, setViolationLimit] = useState(0);
+  const [violationsLoading, setViolationsLoading] = useState(false);
+  const [violationsError, setViolationsError] = useState("");
   const fiveMinuteAlertShownRef = useRef(false);
   const [pauseLocked, setPauseLocked] = useState(
     canonicalStatus(normalizedAssessment?.status) === "PAUSED"
@@ -987,11 +1006,38 @@ try {
     [cleanupExamShell, clearWaitingSession, onReturnToDashboard],
   );
 
+  const loadCandidateViolations = useCallback(async ({ silent = false } = {}) => {
+    if (!assessmentId || !accessToken) return;
+    if (!silent) setViolationsLoading(true);
+    try {
+      const response = await axios.get(
+        `${API}/api/violations/assessment/${assessmentId}/candidate-summary`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      setCandidateViolations(Array.isArray(response.data?.violations) ? response.data.violations : []);
+      setViolationCount(Number(response.data?.violationcount ?? response.data?.violation_count ?? 0) || 0);
+      setViolationLimit(Number(response.data?.allowedlimit ?? response.data?.allowed_limit ?? 0) || 0);
+      setViolationsError("");
+    } catch (error) {
+      if (!silent) {
+        setViolationsError(error?.response?.data?.detail || error?.message || "Violation history could not be loaded.");
+      }
+    } finally {
+      if (!silent) setViolationsLoading(false);
+    }
+  }, [assessmentId, accessToken]);
+  useEffect(() => {
+    if (!assessmentId || !accessToken) return undefined;
+    void loadCandidateViolations({ silent: true });
+    const timer = setInterval(() => void loadCandidateViolations({ silent: true }), 5000);
+    return () => clearInterval(timer);
+  }, [assessmentId, accessToken, loadCandidateViolations]);
   useEffect(() => {
     if (!window.electronAPI?.onDetectionResult) return undefined;
 
     const unsubscribe = window.electronAPI.onDetectionResult((payload) => {
       console.log("[DETECTION RESULT]", payload);
+      setTimeout(() => void loadCandidateViolations({ silent: true }), 250);
 
       const candidates = [
         payload,
@@ -1028,7 +1074,7 @@ try {
         console.error(error);
       }
     };
-  }, [exitForViolationThreshold]);
+  }, [exitForViolationThreshold, loadCandidateViolations]);
 
   const reportInterruption = useCallback(async (reason, source) => {
     if (!entryGrantedRef.current || completedRef.current || intentionalExitRef.current || !assessmentId || !accessToken) {
@@ -1267,20 +1313,66 @@ clearWaitingSession();
   }, []);
 
   const showBrowserForActiveState = useCallback(async () => {
-    if (!window.electronAPI || completedRef.current) return false;
+    if (!window.electronAPI || completedRef.current || violationsOpen) return false;
     const shown = await safeElectron(() => window.electronAPI.showBrowser(), "Failed to show secured browser.", { silent: true });
     if (!shown) return false;
     const resized = await safeElectron(() => resizeBrowserToArea(), "Failed to resize BrowserView", { silent: false });
     if (!resized) return false;
     await safeElectron(() => window.electronAPI.restoreBrowser(), "Failed to restore secured browser.", { silent: true });
-    await safeElectron(() => window.electronAPI.focusBrowser(), "Failed to focus secured browser.", { silent: true });
+    // Routine status polling, Socket.IO updates, and resize synchronization must
+    // never steal keyboard focus from the embedded React chat composer.
     return true;
-  }, [resizeBrowserToArea, safeElectron]);
+  }, [resizeBrowserToArea, safeElectron, violationsOpen]);
 
   const hideBrowserForPause = useCallback(async () => {
     if (!window.electronAPI || completedRef.current || !browserOpenedRef.current) return false;
     return safeElectron(() => window.electronAPI.hideBrowser(), "Failed to hide secured browser.", { silent: true });
   }, [safeElectron]);
+  const openViolationsPanel = useCallback(async () => {
+    if (browserOpenedRef.current && window.electronAPI) {
+      await safeElectron(
+        () => window.electronAPI.hideBrowser(),
+        "Failed to hide secured browser for violations panel.",
+        { silent: true },
+      );
+    }
+    setViolationsOpen(true);
+    void loadCandidateViolations();
+  }, [loadCandidateViolations, safeElectron]);
+  const closeViolationsPanel = useCallback(() => {
+    setViolationsOpen(false);
+    window.setTimeout(async () => {
+      if (
+        !browserOpenedRef.current ||
+        completedRef.current ||
+        isPaused ||
+        !isExamRunning ||
+        !window.electronAPI
+      ) {
+        return;
+      }
+      await safeElectron(
+        () => window.electronAPI.showBrowser(),
+        "Failed to show secured browser.",
+        { silent: true },
+      );
+      await safeElectron(
+        () => resizeBrowserToArea(),
+        "Failed to resize secured browser.",
+        { silent: true },
+      );
+      await safeElectron(
+        () => window.electronAPI.restoreBrowser(),
+        "Failed to restore secured browser.",
+        { silent: true },
+      );
+      await safeElectron(
+        () => window.electronAPI.focusBrowser(),
+        "Failed to focus secured browser.",
+        { silent: true },
+      );
+    }, 80);
+  }, [isPaused, isExamRunning, resizeBrowserToArea, safeElectron]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1357,17 +1449,17 @@ clearWaitingSession();
   useEffect(() => {
     if (!browserOpenedRef.current || completedRef.current || !window.electronAPI) return;
     const sync = async () => {
-      if (isPaused) {
+      if (isPaused || violationsOpen) {
         await hideBrowserForPause();
       } else {
         await showBrowserForActiveState();
       }
     };
     sync();
-  }, [isPaused, hideBrowserForPause, showBrowserForActiveState]);
+  }, [isPaused, violationsOpen, hideBrowserForPause, showBrowserForActiveState]);
 
   useEffect(() => {
-    if (!activeUrl || !browserOpenedRef.current || completedRef.current || isPaused) return;
+    if (!activeUrl || !browserOpenedRef.current || completedRef.current || isPaused || violationsOpen) return;
     if (lastNavigatedUrlRef.current === activeUrl) return;
     let cancelled = false;
     const navigate = async () => {
@@ -1382,7 +1474,7 @@ clearWaitingSession();
     };
     navigate();
     return () => { cancelled = true; };
-  }, [activeUrl, isPaused, safeElectron, showBrowserForActiveState]);
+  }, [activeUrl, isPaused, violationsOpen, safeElectron, showBrowserForActiveState]);
 
   useEffect(() => {
     if (!browserAreaRef.current || typeof ResizeObserver === "undefined") {
@@ -1394,7 +1486,8 @@ clearWaitingSession();
       if (
         !browserOpenedRef.current ||
         completedRef.current ||
-        isPaused
+        isPaused ||
+        violationsOpen
       ) {
         return;
       }
@@ -1411,11 +1504,11 @@ clearWaitingSession();
       if (frameId) cancelAnimationFrame(frameId);
       observer.disconnect();
     };
-  }, [isPaused, resizeBrowserToArea]);
+  }, [isPaused, violationsOpen, resizeBrowserToArea]);
 
   useEffect(() => {
     const onResize = async () => {
-      if (!browserOpenedRef.current || completedRef.current || isPaused) return;
+      if (!browserOpenedRef.current || completedRef.current || isPaused || violationsOpen) return;
       await resizeBrowserToArea();
     };
 
@@ -1426,7 +1519,7 @@ clearWaitingSession();
       clearTimeout(id);
       window.removeEventListener("resize", onResize);
     };
-  }, [isPaused, resizeBrowserToArea]);
+  }, [isPaused, violationsOpen, resizeBrowserToArea]);
 
 
 
@@ -1882,6 +1975,30 @@ setPauseLocked(false);
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <StatusChip status={assessmentStatus} theme={theme} />
           <StatusChip status={examStatus} theme={theme} />
+          <button
+            type="button"
+            onClick={() => void openViolationsPanel()}
+            title="View detected violations"
+            style={{
+              height: 30,
+              padding: "0 11px",
+              borderRadius: 999,
+              border: `1px solid ${violationCount > 0 ? `${t.warning}66` : t.border}`,
+              background: violationCount > 0 ? t.warningBg : t.surfaceGlass,
+              color: violationCount > 0 ? t.warning : t.textSecondary,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              cursor: "pointer",
+              fontSize: 10.5,
+              fontWeight: 800,
+              fontFamily: "'Inter', sans-serif",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Violations {violationCount}/{violationLimit || "—"}
+          </button>
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           {onLogout ? (
             <IconButton theme={theme} onClick={handleLogout} danger title="Sign out" ariaLabel="Sign out">
@@ -2538,6 +2655,61 @@ setPauseLocked(false);
         </div>
       </div>
 
+      {violationsOpen ? (
+        <div
+          onMouseDown={(event) => { if (event.target === event.currentTarget) closeViolationsPanel(); }}
+          style={{ position: "fixed", inset: 0, zIndex: 1200, background: t.overlay, backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+        >
+          <div style={{ width: "min(720px, 100%)", maxHeight: "82vh", display: "flex", flexDirection: "column", overflow: "hidden", borderRadius: 18, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: "0 28px 80px rgba(0,0,0,0.5)" }}>
+            <div style={{ padding: "18px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, borderBottom: `1px solid ${t.border}` }}>
+              <div>
+                <div style={{ color: t.textPrimary, fontSize: 17, fontWeight: 800, fontFamily: "'Space Grotesk', sans-serif" }}>My Violations</div>
+                <div style={{ marginTop: 4, color: t.textMuted, fontSize: 11.5 }}>Detected during this assessment</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ padding: "6px 10px", borderRadius: 999, background: violationCount > 0 ? t.warningBg : t.successBg, border: `1px solid ${violationCount > 0 ? `${t.warning}55` : `${t.success}55`}`, color: violationCount > 0 ? t.warning : t.success, fontSize: 11, fontWeight: 800 }}>
+                  {violationCount} / {violationLimit || "—"}
+                </div>
+                <button type="button" onClick={closeViolationsPanel} aria-label="Close violations panel" style={{ width: 32, height: 32, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textSecondary, cursor: "pointer", fontSize: 18 }}>×</button>
+              </div>
+            </div>
+            <div style={{ padding: 18, overflowY: "auto", minHeight: 180 }}>
+              {violationsLoading ? (
+                <div style={{ minHeight: 160, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 12.5 }}>Loading violation history...</div>
+              ) : violationsError ? (
+                <div style={{ padding: 14, borderRadius: 11, background: t.dangerBg, border: `1px solid ${t.danger}55`, color: t.danger, fontSize: 12.5 }}>{violationsError}</div>
+              ) : candidateViolations.length === 0 ? (
+                <div style={{ minHeight: 160, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", color: t.textMuted }}>
+                  <div style={{ width: 48, height: 48, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", background: t.successBg, color: t.success, marginBottom: 10 }}>
+                    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </div>
+                  <div style={{ color: t.textPrimary, fontWeight: 800, fontSize: 14 }}>No violations detected</div>
+                  <div style={{ marginTop: 4, fontSize: 11.5 }}>Detected violations will appear here.</div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {candidateViolations.map((item, index) => (
+                    <div key={item.violationid || item.violation_id || `${item.timestamp}-${index}`} style={{ padding: 14, borderRadius: 12, border: `1px solid ${t.warning}44`, background: t.warningBg, display: "grid", gridTemplateColumns: "minmax(140px, 0.8fr) minmax(220px, 1.5fr) auto", gap: 14, alignItems: "center" }}>
+                      <div>
+                        <div style={{ color: t.textMuted, fontSize: 8.5, fontWeight: 900, letterSpacing: 0.8, textTransform: "uppercase" }}>Violation type</div>
+                        <div style={{ marginTop: 5, color: t.warning, fontSize: 12.5, fontWeight: 800 }}>{formatViolationLabel(item.violationtype || item.violation_type)}</div>
+                      </div>
+                      <div>
+                        <div style={{ color: t.textMuted, fontSize: 8.5, fontWeight: 900, letterSpacing: 0.8, textTransform: "uppercase" }}>Warning message</div>
+                        <div style={{ marginTop: 5, color: t.textPrimary, fontSize: 12, lineHeight: 1.45 }}>{item.warningmessage || item.warning_message || item.message || "A proctoring violation was detected."}</div>
+                      </div>
+                      <div style={{ color: t.textMuted, fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap" }}>{formatViolationTime(item.timestamp)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ padding: "12px 18px", borderTop: `1px solid ${t.border}`, color: t.textMuted, fontSize: 10.5 }}>
+              Current violation count: <strong style={{ color: t.textPrimary }}>{violationCount}</strong> · Allowed limit: <strong style={{ color: t.textPrimary }}>{violationLimit || "—"}</strong>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {fiveMinuteAlertOpen ? (
         <div
           role="alert"

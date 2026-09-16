@@ -210,6 +210,81 @@ def _normalize_violation(document: dict) -> dict:
     return data
 
 
+@router.get("/assessment/{assessment_id}/candidate-summary")
+async def get_candidate_violation_summary(
+    assessment_id: str,
+    current_user=Depends(require_role("Candidate")),
+):
+    db = get_db()
+    assessment = await _find_assessment(db, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    await _ensure_assessment_access(db, assessment, current_user)
+
+    violations = (
+        await db.violations.find(_assessment_query(assessment_id))
+        .sort(_created_sort())
+        .to_list(None)
+    )
+    violation_count = int(
+        _assessment_value(
+            assessment,
+            "violationcount",
+            "violation_count",
+            default=len(violations),
+        )
+        or 0
+    )
+    allowed_limit = int(
+        _assessment_value(
+            assessment,
+            "violationthreshold",
+            "violation_threshold",
+            "threshold",
+            default=0,
+        )
+        or 0
+    )
+
+    candidate_events = []
+    for item in violations:
+        normalized = _normalize_violation(item)
+        violation_type = (
+            normalized.get("violationtype")
+            or normalized.get("violation_type")
+            or normalized.get("type")
+            or normalized.get("detail")
+            or "Violation"
+        )
+        message = (
+            normalized.get("message")
+            or normalized.get("warningmessage")
+            or normalized.get("warning_message")
+            or normalized.get("detail")
+            or "A proctoring violation was detected."
+        )
+        candidate_events.append({
+            "violationid": normalized.get("violationid"),
+            "violation_id": normalized.get("violation_id"),
+            "violationtype": violation_type,
+            "violation_type": violation_type,
+            "message": message,
+            "warningmessage": message,
+            "warning_message": message,
+            "timestamp": normalized.get("timestamp"),
+        })
+
+    return {
+        "assessmentid": assessment_id,
+        "assessment_id": assessment_id,
+        "violations": candidate_events,
+        "violationcount": violation_count,
+        "violation_count": violation_count,
+        "allowedlimit": allowed_limit,
+        "allowed_limit": allowed_limit,
+    }
+
+
 @router.get("/assessment/{assessment_id}")
 async def get_violations_by_assessment(
     assessment_id: str,
