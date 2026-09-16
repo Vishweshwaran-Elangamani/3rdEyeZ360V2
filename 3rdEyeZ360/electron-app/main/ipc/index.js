@@ -196,27 +196,16 @@ function closeMonitoringToastWindow() {
 }
 
 function positionMonitoringToastWindow(mainWindow) {
-  if (
-    !isWindowAlive(mainWindow) ||
-    !monitoringToastWindow ||
-    monitoringToastWindow.isDestroyed()
-  ) {
-    return;
-  }
-
+  if (!isWindowAlive(mainWindow) || !monitoringToastWindow || monitoringToastWindow.isDestroyed()) return;
   const parentBounds = mainWindow.getBounds();
-  const width = Math.min(660, Math.max(460, parentBounds.width - 96));
-  const height = 230;
-
-  monitoringToastWindow.setBounds(
-    {
-      x: Math.round(parentBounds.x + (parentBounds.width - width) / 2),
-      y: Math.round(parentBounds.y + (parentBounds.height - height) / 2),
-      width,
-      height,
-    },
-    false,
-  );
+  const width = Math.min(540, Math.max(420, parentBounds.width - 80));
+  const height = 190;
+  monitoringToastWindow.setBounds({
+    x: Math.round(parentBounds.x + (parentBounds.width - width) / 2),
+    y: Math.round(parentBounds.y + 72),
+    width,
+    height,
+  }, false);
 }
 
 function showNativeMonitoringToast(mainWindow, rawPayload) {
@@ -235,10 +224,12 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
     return;
   }
 
+  const backendAction = String(payload.action || "").trim().toLowerCase();
   const shouldToast =
     payload.toast === true ||
     payload.warning === true ||
-    payload.violation === true;
+    payload.violation === true ||
+    ["toast", "violation", "final_warning", "grace_period", "threshold_reached"].includes(backendAction);
 
   if (!shouldToast) {
     console.log("[NATIVE TOAST] skipped - toast flag false", payload);
@@ -275,19 +266,42 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
       payload.result?.candidate_action,
   );
 
-  const title = payload.violation
-    ? "Violation detected"
-    : payload.warning
-      ? "Monitoring warning"
-      : "Monitoring alert";
+  const currentCount = Number(payload.violation_count ?? payload.violationcount ?? payload.count ?? 0);
+  const allowedLimit = Number(payload.allowed_limit ?? payload.allowedlimit ?? 0);
+  const normalizedLevel = String(payload.warning_level || payload.warninglevel || "").trim().toUpperCase();
+  const hasLimit = Number.isFinite(allowedLimit) && allowedLimit > 0;
+  const remainingBeforeRemoval = hasLimit ? Math.max(0, allowedLimit - currentCount) : null;
+  const isRemoval = backendAction === "threshold_reached" || normalizedLevel === "REMOVAL" || (hasLimit && currentCount >= allowedLimit);
+  const isFinal = !isRemoval && (backendAction === "final_warning" || normalizedLevel === "FINAL" || (hasLimit && currentCount === Math.max(1, allowedLimit - 1)));
+  const isHigh = !isRemoval && !isFinal && (normalizedLevel === "HIGH" || (hasLimit && currentCount >= Math.max(1, allowedLimit - 2)));
+  const title = isRemoval
+    ? "Disqualified from assessment"
+    : isFinal
+      ? "Final warning - one violation away from removal"
+      : isHigh
+        ? "High warning - close to removal"
+        : payload.violation || backendAction === "violation"
+          ? "Violation detected"
+          : "Monitoring warning";
 
-  const countText = payload.count ? ` - Count: ${payload.count}` : "";
+  const countText = currentCount !== undefined && currentCount !== null
+    ? ` - Violations: ${currentCount}${allowedLimit ? `/${allowedLimit}` : ""}`
+    : "";
 
-  const background = payload.violation
-    ? "linear-gradient(135deg, #7f1d1d 0%, #b91c1c 100%)"
-    : payload.warning
-      ? "linear-gradient(135deg, #92400e 0%, #d97706 100%)"
-      : "linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%)";
+  const background = isRemoval || isFinal
+    ? "linear-gradient(135deg, #450a0a 0%, #991b1b 100%)"
+    : isHigh
+      ? "linear-gradient(135deg, #7c2d12 0%, #c2410c 100%)"
+      : payload.violation
+        ? "linear-gradient(135deg, #7f1d1d 0%, #b91c1c 100%)"
+        : "linear-gradient(135deg, #78350f 0%, #b45309 100%)";
+  const proximityText = isRemoval
+    ? `You reached ${currentCount}/${allowedLimit}. You have been disqualified from this assessment due to violations. Re-entry requires examiner approval.`
+    : isFinal
+      ? "Another confirmed violation will remove you. Correct the issue immediately."
+      : isHigh && remainingBeforeRemoval !== null
+        ? `You are close to removal from this assessment. Only ${remainingBeforeRemoval} violation${remainingBeforeRemoval === 1 ? "" : "s"} remaining.`
+        : "";
 
   if (!monitoringToastWindow || monitoringToastWindow.isDestroyed()) {
     monitoringToastWindow = new BrowserWindow({
@@ -345,36 +359,36 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
         width: 100%;
         height: 100%;
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
-        padding: 12px;
+        padding: 10px 12px;
       }
 
       .toast {
         width: 100%;
-        min-height: 185px;
-        border-radius: 22px;
-        padding: 24px 28px;
+        min-height: 145px;
+        border-radius: 16px;
+        padding: 18px 20px;
         color: white;
         background: ${background};
         box-shadow: 0 30px 90px rgba(0, 0, 0, .62);
         border: 1px solid rgba(255, 255, 255, .28);
         display: flex;
-        gap: 18px;
+        gap: 14px;
         align-items: flex-start;
-        animation: pop .18s ease-out;
+        animation: alertIn .32s cubic-bezier(.2,.8,.2,1);
       }
 
       .icon {
-        width: 50px;
-        height: 50px;
+        width: 42px;
+        height: 42px;
         border-radius: 50%;
         background: rgba(255, 255, 255, .18);
         display: flex;
         align-items: center;
         justify-content: center;
         flex: 0 0 auto;
-        font-size: 28px;
+        font-size: 23px;
         font-weight: 900;
       }
 
@@ -387,7 +401,7 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
       }
 
       .message {
-        font-size: 19px;
+        font-size: 15px;
         line-height: 1.42;
         font-weight: 760;
         word-break: break-word;
@@ -408,16 +422,20 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
         font-family: Consolas, "JetBrains Mono", monospace;
       }
 
-      @keyframes pop {
-        from {
-          opacity: 0;
-          transform: translateY(10px) scale(.96);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0) scale(1);
-        }
+      .proximity {
+        margin-top: 9px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: rgba(255,255,255,.14);
+        border: 1px solid rgba(255,255,255,.22);
+        font-size: 13px;
+        line-height: 1.35;
+        font-weight: 800;
       }
+      .progress { margin-top: 10px; height: 4px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.18); }
+      .progress::after { content: ""; display: block; height: 100%; width: 100%; background: rgba(255,255,255,.85); transform-origin: left; animation: drain var(--duration) linear forwards; }
+      @keyframes alertIn { from { opacity: 0; transform: translateY(-28px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+      @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
     </style>
   </head>
   <body>
@@ -432,9 +450,9 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
               ? `<div class="action">Action: ${escapeHtml(candidateAction)}</div>`
               : ""
           }
-          <div class="meta">
-            Category: ${escapeHtml(category)} | Issue: ${escapeHtml(issue)}${escapeHtml(countText)}
-          </div>
+          ${proximityText ? `<div class="proximity">${escapeHtml(proximityText)}</div>` : ""}
+          <div class="meta">${escapeHtml(countText.replace(/^ - /, ""))}</div>
+          <div class="progress" style="--duration:${isFinal ? 15 : isRemoval ? 5.5 : 4.5}s"></div>
         </div>
       </div>
     </div>
@@ -475,9 +493,10 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
 
   if (monitoringToastTimer) clearTimeout(monitoringToastTimer);
 
+  const toastDuration = isRemoval ? 7000 : isFinal ? 15000 : isHigh ? 9000 : TOAST_DURATION_MS;
   monitoringToastTimer = setTimeout(() => {
     closeMonitoringToastWindow();
-  }, TOAST_DURATION_MS);
+  }, toastDuration);
 }
 
 function pickField(data, ...keys) {

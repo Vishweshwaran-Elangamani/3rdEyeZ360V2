@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 
 from config.database import get_db
@@ -92,16 +92,79 @@ async def log_violation(
 
     assessment = await db.assessments.find_one({"assessment_id": assessment_id})
     exam = await db.exams.find_one({"exam_id": exam_id})
+    current_count = int(
+        (assessment or {}).get("violation_count", (assessment or {}).get("violationcount", 0)) or 0
+    )
+    allowed_limit = int(
+        (exam or {}).get(
+            "violation_threshold",
+            (exam or {}).get(
+                "violationthreshold",
+                (assessment or {}).get(
+                    "violation_threshold",
+                    (assessment or {}).get("violationthreshold", 10),
+                ),
+            ),
+        )
+        or 10
+    )
+    current_risk = int((assessment or {}).get("risk_score", 0) or 0)
+    now = datetime.utcnow()
 
-    if exam and assessment and assessment.get("risk_score", 0) >= exam.get("violation_threshold", 10):
+    if current_count >= allowed_limit:
         await db.assessments.update_one(
             {"assessment_id": assessment_id},
-            {"$set": {"status": "LOCKED", "threshold_reached": True, "updated_at": datetime.utcnow()}}
+            {"$set": {
+                "status": "LOCKED",
+                "threshold_reached": True,
+                "thresholdreached": True,
+                "violation_threshold": allowed_limit,
+                "violationthreshold": allowed_limit,
+                "updated_at": now,
+            }},
         )
-        return {"locked": True, "violation": violation}
+        return {
+            "locked": True,
+            "threshold_reached": True,
+            "warning_level": "REMOVAL",
+            "violation_count": current_count,
+            "allowed_limit": allowed_limit,
+            "risk_score": current_risk,
+            "violation": violation,
+        }
 
-    return {"locked": False, "violation": violation}
+    if current_count == max(1, allowed_limit - 1):
+        grace_until = now + timedelta(seconds=15)
+        await db.assessments.update_one(
+            {"assessment_id": assessment_id},
+            {"$set": {
+                "final_violation_warning_issued": True,
+                "violation_grace_until": grace_until,
+                "updated_at": now,
+            }},
+        )
+        return {
+            "locked": False,
+            "final_warning": True,
+            "warning_level": "FINAL",
+            "grace_seconds": 15,
+            "grace_until": grace_until,
+            "violation_count": current_count,
+            "allowed_limit": allowed_limit,
+            "risk_score": current_risk,
+            "violation": violation,
+        }
 
+    high_warning_from = max(1, allowed_limit - 2)
+    warning_level = "HIGH" if current_count >= high_warning_from else "STANDARD"
+    return {
+        "locked": False,
+        "warning_level": warning_level,
+        "violation_count": current_count,
+        "allowed_limit": allowed_limit,
+        "risk_score": current_risk,
+        "violation": violation,
+    }
 
 async def get_warning_count(assessment_id: str, detail: str) -> int:
     db = get_db()

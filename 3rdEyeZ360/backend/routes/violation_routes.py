@@ -282,6 +282,12 @@ async def get_candidate_violation_summary(
         "violation_count": violation_count,
         "allowedlimit": allowed_limit,
         "allowed_limit": allowed_limit,
+        "warninglevel": "FINAL" if violation_count == max(1, allowed_limit - 1) else "HIGH" if violation_count >= max(1, allowed_limit - 2) else "STANDARD",
+        "warning_level": "FINAL" if violation_count == max(1, allowed_limit - 1) else "HIGH" if violation_count >= max(1, allowed_limit - 2) else "STANDARD",
+        "graceuntil": assessment.get("violation_grace_until"),
+        "grace_until": assessment.get("violation_grace_until"),
+        "thresholdreached": bool(assessment.get("threshold_reached")),
+        "threshold_reached": bool(assessment.get("threshold_reached")),
     }
 
 

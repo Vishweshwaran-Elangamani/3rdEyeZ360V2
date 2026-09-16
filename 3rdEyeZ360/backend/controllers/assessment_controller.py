@@ -35,11 +35,37 @@ async def process_detection(assessment_id: str, candidate_id: str, exam_id: str,
 
     if warning_count < WARNING_BEFORE_VIOLATION:
         await log_warning(assessment_id, candidate_id, exam_id, detail)
+        db = get_db()
+        assessment = await db.assessments.find_one({"assessment_id": assessment_id}) or {}
+        exam = await db.exams.find_one({"exam_id": exam_id}) or {}
+        violation_count = int(
+            assessment.get("violation_count", assessment.get("violationcount", 0)) or 0
+        )
+        allowed_limit = int(
+            exam.get(
+                "violation_threshold",
+                exam.get(
+                    "violationthreshold",
+                    assessment.get(
+                        "violation_threshold",
+                        assessment.get("violationthreshold", 10),
+                    ),
+                ),
+            )
+            or 10
+        )
         return {
             "action": "toast",
+            "toast": True,
+            "warning": True,
+            "violation": False,
+            "warning_level": "STANDARD",
             "level": level,
+            "detail": detail,
             "message": message,
-            "warning_count": warning_count + 1
+            "warning_count": warning_count + 1,
+            "violation_count": violation_count,
+            "allowed_limit": allowed_limit,
         }
     else:
         vtype = DETAIL_TO_VIOLATION_TYPE.get(detail, detail)
@@ -57,11 +83,44 @@ async def process_detection(assessment_id: str, candidate_id: str, exam_id: str,
             {"assessment_id": assessment_id, "detail": detail},
             {"$set": {"count": 0}}
         )
+        locked = result.get("locked", False)
+        final_warning = result.get("final_warning", False)
+        grace_active = result.get("grace_active", False)
+        warning_level = str(result.get("warning_level") or "STANDARD").upper()
+        action = (
+            "threshold_reached"
+            if locked or warning_level == "REMOVAL"
+            else "final_warning"
+            if final_warning or warning_level == "FINAL"
+            else "grace_period"
+            if grace_active
+            else "violation"
+        )
         return {
-            "action": "violation",
-            "locked": result.get("locked", False),
-            "message": f"⚠️ Violation recorded: {vtype}",
-            "violation": result.get("violation")
+            "action": action,
+            "toast": True,
+            "warning": not locked,
+            "violation_detected": True,
+            "locked": locked,
+            "threshold_reached": result.get("threshold_reached", False),
+            "final_warning": final_warning,
+            "grace_active": grace_active,
+            "grace_seconds": result.get("grace_seconds", 0),
+            "grace_until": result.get("grace_until"),
+            "warning_level": warning_level,
+            "message": (
+                f"Final warning: {result.get('violation_count', 0)} of {result.get('allowed_limit', 0)} violations. Another confirmed violation will remove you from this assessment. Correct the issue within 15 seconds."
+                if final_warning else
+                "Grace period active. Correct the detected issue now."
+                if grace_active else
+                f"You have reached {result.get('violation_count', 0)} of {result.get('allowed_limit', 0)} allowed violations. You are being removed from this assessment. Re-entry requires examiner approval."
+                if locked else
+                f"Violation recorded: {vtype}"
+            ),
+            "violation_count": result.get("violation_count", 0),
+            "allowed_limit": result.get("allowed_limit", 0),
+            "risk_score": result.get("risk_score", 0),
+            "violation": result.get("violation"),
         }
 
 async def get_candidate_assessment(exam_id: str, candidate_id: str):
