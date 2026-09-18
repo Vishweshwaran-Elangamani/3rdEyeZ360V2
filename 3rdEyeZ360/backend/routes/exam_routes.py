@@ -1295,6 +1295,144 @@ async def stop_exam(exam_id: str, current_user=Depends(require_role("Examiner", 
     await emit_exam_event("exam_updated", payload)
     return {"message": "Exam completed permanently", "exam": payload, **payload}
 
+@router.get("/{exam_id}/cumulative-report")
+async def get_exam_cumulative_report(
+    exam_id: str,
+    current_user=Depends(require_role("Examiner", "Admin")),
+):
+    """Return an authorized cumulative assessment report for every assigned candidate."""
+    db = get_db()
+    exam = await _ensure_exam_access(db, exam_id, current_user)
+    assessment_query = {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]}
+    assessments = await db.assessments.find(assessment_query).to_list(None)
+
+    candidate_ids = list({
+        str(item.get("candidate_id") or item.get("candidateid") or "").strip()
+        for item in assessments
+        if item.get("candidate_id") or item.get("candidateid")
+    })
+    users = []
+    if candidate_ids:
+        users = await db.users.find({
+            "$or": [
+                {"user_id": {"$in": candidate_ids}},
+                {"userid": {"$in": candidate_ids}},
+            ]
+        }).to_list(None)
+    users_by_id = {
+        str(user.get("user_id") or user.get("userid") or ""): user
+        for user in users
+    }
+
+    violations = await db.violations.find(assessment_query).sort([
+        ("createdat", 1), ("created_at", 1), ("timestamp", 1)
+    ]).to_list(None)
+    violations_by_assessment = {}
+    for violation in violations:
+        assessment_id = str(
+            violation.get("assessment_id") or violation.get("assessmentid") or ""
+        )
+        violations_by_assessment.setdefault(assessment_id, []).append(violation)
+
+    candidate_rows = []
+    for assessment in assessments:
+        assessment_id = str(
+            assessment.get("assessment_id") or assessment.get("assessmentid") or ""
+        )
+        candidate_id = str(
+            assessment.get("candidate_id") or assessment.get("candidateid") or ""
+        )
+        user = users_by_id.get(candidate_id, {})
+        candidate_violations = violations_by_assessment.get(assessment_id, [])
+        normalized_violations = []
+        for violation in candidate_violations:
+            timestamp = (
+                violation.get("createdat")
+                or violation.get("created_at")
+                or violation.get("timestamp")
+            )
+            normalized_violations.append({
+                "violationid": violation.get("violationid") or violation.get("violation_id"),
+                "violation_id": violation.get("violation_id") or violation.get("violationid"),
+                "type": violation.get("type") or violation.get("detail") or "Violation",
+                "detail": violation.get("detail") or violation.get("type") or "Violation",
+                "message": violation.get("message") or violation.get("detail") or "Violation recorded",
+                "timestamp": timestamp,
+                "risk_score": violation.get("risk_score", violation.get("riskscore", 0)),
+            })
+
+        start_time = (
+            assessment.get("activetime")
+            or assessment.get("active_time")
+            or assessment.get("jointime")
+            or assessment.get("join_time")
+        )
+        end_time = (
+            assessment.get("exittime")
+            or assessment.get("exit_time")
+            or assessment.get("finalizedat")
+            or assessment.get("finalized_at")
+        )
+        status = _normalize_status(
+            assessment.get("finalstatus")
+            or assessment.get("final_status")
+            or assessment.get("assessmentstatus")
+            or assessment.get("assessment_status")
+            or assessment.get("status"),
+            "ASSIGNED",
+        )
+        confirmed_count = int(
+            assessment.get(
+                "violation_count",
+                assessment.get("violationcount", len(normalized_violations)),
+            )
+            or 0
+        )
+        credibility_score = int(
+            assessment.get(
+                "credibility_score",
+                assessment.get("credibilityscore", 100),
+            )
+            or 0
+        )
+        candidate_rows.append({
+            "assessmentid": assessment_id,
+            "assessment_id": assessment_id,
+            "candidateid": candidate_id,
+            "candidate_id": candidate_id,
+            "candidatename": user.get("name") or candidate_id,
+            "candidate_name": user.get("name") or candidate_id,
+            "candidateemail": user.get("email") or "",
+            "candidate_email": user.get("email") or "",
+            "starttime": start_time,
+            "start_time": start_time,
+            "endtime": end_time,
+            "end_time": end_time,
+            "status": status,
+            "credibilityscore": credibility_score,
+            "credibility_score": credibility_score,
+            "violationcount": confirmed_count,
+            "violation_count": confirmed_count,
+            "violations": normalized_violations,
+        })
+
+    total_violations = sum(row["violationcount"] for row in candidate_rows)
+    candidates_with_start = [row["starttime"] for row in candidate_rows if row["starttime"]]
+    candidates_with_end = [row["endtime"] for row in candidate_rows if row["endtime"]]
+    return {
+        "exam": _exam_payload(exam),
+        "summary": {
+            "total_candidates": len(candidate_rows),
+            "total_violations": total_violations,
+            "average_credibility": round(
+                sum(row["credibilityscore"] for row in candidate_rows) / len(candidate_rows)
+            ) if candidate_rows else 0,
+            "started_at": min(candidates_with_start) if candidates_with_start else exam.get("startedat", exam.get("started_at")),
+            "ended_at": max(candidates_with_end) if candidates_with_end else exam.get("endedat", exam.get("ended_at")),
+        },
+        "candidates": candidate_rows,
+    }
+
 @router.get("/{exam_id}/assessments")
 async def get_exam_assessments(
     exam_id: str,

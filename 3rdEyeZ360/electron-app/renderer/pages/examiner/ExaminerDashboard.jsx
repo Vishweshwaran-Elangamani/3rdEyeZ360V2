@@ -241,6 +241,97 @@ function parseServerDateMs(value) {
   const timestamp = new Date(hasTimezone ? text : `${text}Z`).getTime();
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
+function formatReportDateTime(value) {
+  const timestamp = parseServerDateMs(value);
+  if (!timestamp) return "Not available";
+  return new Date(timestamp).toLocaleString();
+}
+function formatReportDuration(startValue, endValue) {
+  const start = parseServerDateMs(startValue);
+  const end = parseServerDateMs(endValue);
+  if (!start) return "Not started";
+  if (!end || end < start) return "In progress";
+  const totalMinutes = Math.max(0, Math.round((end - start) / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+function sanitizeReportFileName(value) {
+  return String(value || "assessment-report").trim().replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "") || "assessment-report";
+}
+function downloadReportFile(content, mimeType, fileName) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function csvValue(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+function reportExportColumns() {
+  return ["Candidate Name", "Candidate ID", "Candidate Email", "Start Time", "End Time", "Duration", "Status", "Credibility Score (%)", "Violation Count", "Violation Timings", "Violation Details"];
+}
+function createReportExportRows(reportData) {
+  return (Array.isArray(reportData?.candidates) ? reportData.candidates : []).map((candidate) => ({
+    "Candidate Name": candidate.candidatename || "",
+    "Candidate ID": candidate.candidateid || "",
+    "Candidate Email": candidate.candidateemail || "",
+    "Start Time": formatReportDateTime(candidate.starttime),
+    "End Time": candidate.endtime ? formatReportDateTime(candidate.endtime) : "In progress",
+    "Duration": formatReportDuration(candidate.starttime, candidate.endtime),
+    "Status": formatStatus(candidate.status),
+    "Credibility Score (%)": candidate.credibilityscore,
+    "Violation Count": candidate.violationcount,
+    "Violation Timings": candidate.violations.map((item) => formatReportDateTime(item.timestamp)).join(" | "),
+    "Violation Details": candidate.violations.map((item) => `${String(item.type || item.detail || "Violation").replaceAll("_", " ")}: ${item.message || item.detail || "Violation recorded"}`).join(" | "),
+  }));
+}
+function exportCumulativeReportCsv(reportData) {
+  if (!reportData) return;
+  const columns = reportExportColumns();
+  const rows = createReportExportRows(reportData);
+  const csv = [columns.map(csvValue).join(","), ...rows.map((row) => columns.map((column) => csvValue(row[column])).join(","))].join("\r\n");
+  downloadReportFile(`\uFEFF${csv}`, "text/csv;charset=utf-8", `${sanitizeReportFileName(reportData?.exam?.name)}-cumulative-report.csv`);
+}
+function escapeExcelHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+}
+function exportCumulativeReportExcel(reportData) {
+  if (!reportData) return;
+  const columns = reportExportColumns();
+  const rows = createReportExportRows(reportData);
+  const summary = reportData?.summary || {};
+  const examName = reportData?.exam?.name || "Assessment";
+  const summaryRows = [
+    ["Assessment", examName],
+    ["Total Candidates", summary.total_candidates ?? rows.length],
+    ["Total Violations", summary.total_violations ?? 0],
+    ["Average Credibility", `${summary.average_credibility ?? 0}%`],
+    ["Assessment Window", `${formatReportDateTime(summary.started_at)} to ${formatReportDateTime(summary.ended_at)}`],
+  ];
+  const html = `<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="UTF-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Cumulative Report</x:Name><x:WorksheetOptions><x:FreezePanes/><x:FrozenNoSplit/><x:SplitHorizontal>8</x:SplitHorizontal><x:TopRowBottomPane>8</x:TopRowBottomPane></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--><style>body{font-family:Calibri,Arial,sans-serif}table{border-collapse:collapse}th,td{border:1px solid #aab3c2;padding:7px 9px;vertical-align:top;white-space:normal}h2{color:#1f3c88}.summary td:first-child{font-weight:700;background:#eef3f8}.data th{font-weight:700;background:#dce6f1}.data td:nth-child(10),.data td:nth-child(11){min-width:280px}.number{text-align:right}</style></head><body><h2>${escapeExcelHtml(examName)} - Cumulative Assessment Report</h2><table class="summary">${summaryRows.map(([label, value]) => `<tr><td>${escapeExcelHtml(label)}</td><td>${escapeExcelHtml(value)}</td></tr>`).join("")}</table><br><table class="data"><thead><tr>${columns.map((column) => `<th>${escapeExcelHtml(column)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td${["Credibility Score (%)", "Violation Count"].includes(column) ? ' class="number"' : ""}>${escapeExcelHtml(row[column])}</td>`).join("")}</tr>`).join("")}</tbody></table></body></html>`;
+  downloadReportFile(`\uFEFF${html}`, "application/vnd.ms-excel;charset=utf-8", `${sanitizeReportFileName(examName)}-cumulative-report.xls`);
+}
+function normalizeReportCandidate(candidate) {
+  return {
+    ...candidate,
+    assessmentid: candidate.assessmentid ?? candidate.assessment_id ?? "",
+    candidateid: candidate.candidateid ?? candidate.candidate_id ?? "",
+    candidatename: candidate.candidatename ?? candidate.candidate_name ?? candidate.candidateid ?? "Candidate",
+    candidateemail: candidate.candidateemail ?? candidate.candidate_email ?? "",
+    starttime: candidate.starttime ?? candidate.start_time ?? null,
+    endtime: candidate.endtime ?? candidate.end_time ?? null,
+    credibilityscore: Number(candidate.credibilityscore ?? candidate.credibility_score ?? 100),
+    violationcount: Number(candidate.violationcount ?? candidate.violation_count ?? 0),
+    violations: Array.isArray(candidate.violations) ? candidate.violations : [],
+  };
+}
 function normalizeExam(exam) {
   if (!exam) return null;
   return {
@@ -1776,7 +1867,7 @@ function TransitionOverlay({ open, theme, variant, title, subtitle }) {
 
 /* ============= Exam card (list view) ============= */
 
-function ExamCard({ exam, theme, index, onMonitor, onAssign, pendingRequestCount = 0, onOpenRequests }) {
+function ExamCard({ exam, theme, index, onMonitor, onAssign, onReport, pendingRequestCount = 0, onOpenRequests }) {
   const t = THEMES[theme];
   const [hover, setHover] = useState(false);
   const [mouse, setMouse] = useState({ x: 0.5, y: 0.5 });
@@ -2169,6 +2260,13 @@ function ExamCard({ exam, theme, index, onMonitor, onAssign, pendingRequestCount
         >
           Assign
         </GhostButton>
+        <GhostButton
+          theme={theme}
+          onClick={() => onReport(exam)}
+          style={{ flex: 1, justifyContent: "center", padding: "11px 0" }}
+        >
+          Report
+        </GhostButton>
       </div>
     </div>
   );
@@ -2476,6 +2574,12 @@ export default function ExaminerDashboard() {
   const [extendTimeOpen, setExtendTimeOpen] = useState(false);
   const [extendTimeInput, setExtendTimeInput] = useState("");
   const [extendTimeSaving, setExtendTimeSaving] = useState(false);
+  const [reportData, setReportData] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState("");
+  const [reportSearch, setReportSearch] = useState("");
+  const [reportStatus, setReportStatus] = useState("ALL");
+  const [expandedReportCandidates, setExpandedReportCandidates] = useState({});
   const [reduceTimeInput, setReduceTimeInput] = useState("");
   const [reduceTimeSaving, setReduceTimeSaving] = useState(false);
   const extendTimeMenuRef = useRef(null);
@@ -3067,6 +3171,31 @@ export default function ExaminerDashboard() {
     });
   }, [chatOpen, selectedCandidate?.candidateid]);
 
+  const openCumulativeReport = useCallback(async (exam) => {
+    const normalized = normalizeExam(exam);
+    if (!normalized?.examid) return;
+    setSelectedExam(normalized);
+    setView("report");
+    setReportLoading(true);
+    setReportError("");
+    setReportSearch("");
+    setReportStatus("ALL");
+    setExpandedReportCandidates({});
+    try {
+      const response = await axios.get(`${API}/api/exams/${normalized.examid}/cumulative-report`, { headers });
+      const data = response.data || {};
+      setReportData({
+        ...data,
+        exam: normalizeExam(data.exam || normalized),
+        candidates: Array.isArray(data.candidates) ? data.candidates.map(normalizeReportCandidate) : [],
+      });
+    } catch (error) {
+      setReportData(null);
+      setReportError(error?.response?.data?.detail || error?.message || "Cumulative report could not be loaded.");
+    } finally {
+      setReportLoading(false);
+    }
+  }, [headers]);
   const openMonitor = async (exam) => {
     const normalized = normalizeExam(exam);
     setSelectedExam(normalized);
@@ -3559,6 +3688,67 @@ export default function ExaminerDashboard() {
     );
   }
 
+  if (view === "report") {
+    const summary = reportData?.summary || {};
+    const rows = Array.isArray(reportData?.candidates) ? reportData.candidates : [];
+    const statusOptions = ["ALL", ...Array.from(new Set(rows.map((row) => String(row.status || "UNKNOWN").toUpperCase())))];
+    const query = reportSearch.trim().toLowerCase();
+    const filteredRows = rows.filter((row) => {
+      if (reportStatus !== "ALL" && String(row.status || "UNKNOWN").toUpperCase() !== reportStatus) return false;
+      if (!query) return true;
+      return [row.candidatename, row.candidateid, row.candidateemail, row.status]
+        .filter(Boolean).join(" ").toLowerCase().includes(query);
+    });
+    const statCards = [
+      ["Candidates", summary.total_candidates ?? rows.length, t.accent],
+      ["Violations", summary.total_violations ?? rows.reduce((sum, row) => sum + row.violationcount, 0), t.danger],
+      ["Avg credibility", `${summary.average_credibility ?? 0}%`, t.success],
+      ["Assessment window", `${formatReportDateTime(summary.started_at)} → ${formatReportDateTime(summary.ended_at)}`, t.info],
+    ];
+    return (
+      <div style={{ minHeight: "100vh", background: t.canvas, backgroundImage: t.canvasTint, color: t.textPrimary, fontFamily: "'Inter', sans-serif" }}>
+        <GlobalStyles theme={theme} />
+        <header style={{ minHeight: 68, padding: "0 24px", display: "flex", alignItems: "center", gap: 14, borderBottom: `1px solid ${t.border}`, background: t.surface, position: "sticky", top: 0, zIndex: 30, backdropFilter: "blur(24px)" }}>
+          <GhostButton theme={theme} onClick={() => { setView("list"); setReportData(null); setSelectedExam(null); }}>Back</GhostButton>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 18, fontWeight: 800, fontFamily: "'Space Grotesk', sans-serif" }}>Cumulative Assessment Report</div>
+            <div style={{ marginTop: 3, color: t.textMuted, fontSize: 11.5 }}>{reportData?.exam?.name || selectedExam?.name || "Assessment"}</div>
+          </div>
+          <GhostButton theme={theme} disabled={reportLoading || !reportData} onClick={() => exportCumulativeReportCsv(reportData)}>Download CSV</GhostButton>
+          <GradientButton theme={theme} disabled={reportLoading || !reportData} onClick={() => exportCumulativeReportExcel(reportData)} gradient={t.successGradient} glow={t.glowSuccess} style={{ padding: "9px 14px" }}>Download Excel</GradientButton>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <GhostButton theme={theme} disabled={reportLoading} onClick={() => openCumulativeReport(reportData?.exam || selectedExam)}>Refresh</GhostButton>
+        </header>
+        <main style={{ maxWidth: 1500, margin: "0 auto", padding: "24px" }}>
+          {reportLoading ? <div style={{ padding: 70, textAlign: "center", color: t.textMuted }}>Loading cumulative report...</div> : reportError ? <div style={{ padding: 18, borderRadius: 14, background: t.dangerBg, border: `1px solid ${t.danger}55`, color: t.danger }}>{reportError}</div> : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 20 }}>
+                {statCards.map(([label, value, color]) => <div key={label} style={{ minHeight: 92, padding: 17, borderRadius: 17, background: t.cardSurface, border: `1px solid ${t.border}` }}><div style={{ color: t.textMuted, fontSize: 9.5, fontWeight: 800, letterSpacing: .7, textTransform: "uppercase" }}>{label}</div><div style={{ marginTop: 9, color, fontSize: label === "Assessment window" ? 12 : 24, fontWeight: 900, lineHeight: 1.35 }}>{value}</div></div>)}
+              </div>
+              <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                <input value={reportSearch} onChange={(event) => setReportSearch(event.target.value)} placeholder="Search candidate, ID, email or status..." style={{ flex: "1 1 320px", minHeight: 42, padding: "0 13px", borderRadius: 11, border: `1px solid ${t.border}`, background: t.inputBg, color: t.textPrimary, outline: "none" }} />
+                <select value={reportStatus} onChange={(event) => setReportStatus(event.target.value)} style={{ minHeight: 42, padding: "0 12px", borderRadius: 11, border: `1px solid ${t.border}`, background: t.surfaceSolid, color: t.textPrimary }}>
+                  {statusOptions.map((status) => <option key={status} value={status}>{status === "ALL" ? "All statuses" : formatStatus(status)}</option>)}
+                </select>
+              </div>
+              <div style={{ overflowX: "auto", borderRadius: 17, border: `1px solid ${t.border}`, background: t.cardSurface }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1080 }}>
+                  <thead><tr>{["Candidate", "Start time", "End time", "Duration", "Status", "Credibility", "Violations", "Details"].map((label) => <th key={label} style={{ padding: "13px 14px", textAlign: "left", color: t.textMuted, fontSize: 9.5, letterSpacing: .65, textTransform: "uppercase", borderBottom: `1px solid ${t.border}`, background: t.surfaceGlass }}>{label}</th>)}</tr></thead>
+                  <tbody>{filteredRows.length === 0 ? <tr><td colSpan="8" style={{ padding: 40, textAlign: "center", color: t.textMuted }}>No candidates match this report filter.</td></tr> : filteredRows.map((row) => {
+                    const expanded = Boolean(expandedReportCandidates[row.assessmentid]);
+                    return <React.Fragment key={row.assessmentid || row.candidateid}>
+                      <tr><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><div style={{ fontWeight: 800 }}>{row.candidatename}</div><div style={{ marginTop: 3, color: t.textMuted, fontSize: 10.5 }}>{row.candidateid}{row.candidateemail ? ` · ${row.candidateemail}` : ""}</div></td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{formatReportDateTime(row.starttime)}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{row.endtime ? formatReportDateTime(row.endtime) : "In progress"}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{formatReportDuration(row.starttime, row.endtime)}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><span style={{ color: statusColor(row.status, t), fontWeight: 800, fontSize: 11 }}>{formatStatus(row.status)}</span></td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, color: row.credibilityscore >= 70 ? t.success : row.credibilityscore >= 40 ? t.warning : t.danger, fontWeight: 900 }}>{row.credibilityscore}%</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, color: row.violationcount ? t.danger : t.textMuted, fontWeight: 900 }}>{row.violationcount}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><button type="button" onClick={() => setExpandedReportCandidates((current) => ({ ...current, [row.assessmentid]: !current[row.assessmentid] }))} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textSecondary, cursor: "pointer", fontWeight: 700 }}>{expanded ? "Hide" : "View"}</button></td></tr>
+                      {expanded ? <tr><td colSpan="8" style={{ padding: "0 14px 16px", borderBottom: `1px solid ${t.border}` }}><div style={{ padding: 14, borderRadius: 12, background: t.surfaceGlass }}>{row.violations.length === 0 ? <div style={{ color: t.textMuted, fontSize: 12 }}>No confirmed violations recorded.</div> : <div style={{ display: "grid", gap: 8 }}>{row.violations.map((violation, index) => <div key={violation.violationid || `${row.assessmentid}-${index}`} style={{ display: "grid", gridTemplateColumns: "180px minmax(180px, .8fr) 1fr", gap: 12, padding: 10, borderRadius: 10, background: t.cardSurface, border: `1px solid ${t.danger}33` }}><span style={{ color: t.textMuted, fontSize: 11 }}>{formatReportDateTime(violation.timestamp)}</span><span style={{ color: t.danger, fontSize: 11.5, fontWeight: 800, textTransform: "capitalize" }}>{String(violation.type || violation.detail || "Violation").replaceAll("_", " ")}</span><span style={{ color: t.textSecondary, fontSize: 11.5 }}>{violation.message || violation.detail || "Violation recorded"}</span></div>)}</div>}</div></td></tr> : null}
+                    </React.Fragment>;
+                  })}</tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </main>
+      </div>
+    );
+  }
   /* ============= LIST VIEW ============= */
 
   if (view === "list") {
@@ -4469,6 +4659,7 @@ export default function ExaminerDashboard() {
                     index={i}
                     theme={theme}
                     onMonitor={openMonitor}
+                    onReport={openCumulativeReport}
                     pendingRequestCount={
                       pendingRequestCountsByExam[String(exam.examid)] || 0
                     }
