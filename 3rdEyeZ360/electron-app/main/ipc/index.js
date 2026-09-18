@@ -266,8 +266,11 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
       payload.result?.candidate_action,
   );
 
-  const currentCount = Number(payload.violation_count ?? payload.violationcount ?? payload.count ?? 0);
-  const allowedLimit = Number(payload.allowed_limit ?? payload.allowedlimit ?? 0);
+  const currentCount = Number(payload.violation_count ?? payload.violationcount ?? 0);
+  const allowedLimit = Number(
+    payload.allowed_limit ?? payload.allowedlimit ??
+    payload.violation_threshold ?? payload.violationthreshold ?? 0,
+  );
   const normalizedLevel = String(payload.warning_level || payload.warninglevel || "").trim().toUpperCase();
   const hasLimit = Number.isFinite(allowedLimit) && allowedLimit > 0;
   const remainingBeforeRemoval = hasLimit ? Math.max(0, allowedLimit - currentCount) : null;
@@ -277,16 +280,16 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
   const title = isRemoval
     ? "Disqualified from assessment"
     : isFinal
-      ? "Final warning - one violation away from removal"
+      ? "Final warning - disqualification imminent"
       : isHigh
-        ? "High warning - close to removal"
+        ? "High warning - close to disqualification"
         : payload.violation || backendAction === "violation"
           ? "Violation detected"
           : "Monitoring warning";
 
-  const countText = currentCount !== undefined && currentCount !== null
-    ? ` - Violations: ${currentCount}${allowedLimit ? `/${allowedLimit}` : ""}`
-    : "";
+  const countText = hasLimit
+    ? `Violations: ${currentCount}/${allowedLimit}`
+    : `Violations: ${currentCount}`;
 
   const background = isRemoval || isFinal
     ? "linear-gradient(135deg, #450a0a 0%, #991b1b 100%)"
@@ -298,9 +301,9 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
   const proximityText = isRemoval
     ? `You reached ${currentCount}/${allowedLimit}. You have been disqualified from this assessment due to violations. Re-entry requires examiner approval.`
     : isFinal
-      ? "Another confirmed violation will remove you. Correct the issue immediately."
+      ? `You are at ${currentCount}/${allowedLimit}. One more confirmed violation will disqualify you. Use the grace period to correct the detected behavior.`
       : isHigh && remainingBeforeRemoval !== null
-        ? `You are close to removal from this assessment. Only ${remainingBeforeRemoval} violation${remainingBeforeRemoval === 1 ? "" : "s"} remaining.`
+        ? `You are at ${currentCount}/${allowedLimit} and close to disqualification. Only ${remainingBeforeRemoval} confirmed violation${remainingBeforeRemoval === 1 ? "" : "s"} remain.`
         : "";
 
   if (!monitoringToastWindow || monitoringToastWindow.isDestroyed()) {
@@ -432,9 +435,12 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
         line-height: 1.35;
         font-weight: 800;
       }
+      .countdown { margin-top: 10px; font-size: 14px; font-weight: 900; letter-spacing: .04em; color: #fff3c4; }
       .progress { margin-top: 10px; height: 4px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.18); }
       .progress::after { content: ""; display: block; height: 100%; width: 100%; background: rgba(255,255,255,.85); transform-origin: left; animation: drain var(--duration) linear forwards; }
+      .toast.leaving { animation: alertOut .28s ease-in forwards; }
       @keyframes alertIn { from { opacity: 0; transform: translateY(-28px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+      @keyframes alertOut { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(-28px) scale(.97); } }
       @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
     </style>
   </head>
@@ -451,11 +457,13 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
               : ""
           }
           ${proximityText ? `<div class="proximity">${escapeHtml(proximityText)}</div>` : ""}
-          <div class="meta">${escapeHtml(countText.replace(/^ - /, ""))}</div>
-          <div class="progress" style="--duration:${isFinal ? 15 : isRemoval ? 5.5 : 4.5}s"></div>
+          <div class="meta">${escapeHtml(countText)}</div>
+          ${isFinal ? `<div class="countdown" id="graceCountdown">Grace period: ${Math.max(1, Number(payload.grace_seconds || 15))}s</div>` : ""}
+          <div class="progress" style="--duration:${isFinal ? Math.max(1, Number(payload.grace_seconds || 15)) : isRemoval ? 7 : isHigh ? 9 : 4.5}s"></div>
         </div>
       </div>
     </div>
+    ${isFinal ? `<script>let remaining=${Math.max(1, Number(payload.grace_seconds || 15))};const node=document.getElementById("graceCountdown");const timer=setInterval(function(){remaining=Math.max(0,remaining-1);if(node){node.textContent=remaining>0?("Grace period: "+remaining+"s"):"Grace period complete - monitoring continues";}if(remaining<=0){clearInterval(timer);}},1000);<\/script>` : ""}
   </body>
 </html>`;
 
@@ -483,7 +491,8 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
       category,
       issue,
       detail,
-      count: payload.count,
+      violationCount: currentCount,
+      allowedLimit,
     });
   });
 
@@ -493,10 +502,20 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
 
   if (monitoringToastTimer) clearTimeout(monitoringToastTimer);
 
-  const toastDuration = isRemoval ? 7000 : isFinal ? 15000 : isHigh ? 9000 : TOAST_DURATION_MS;
+  const toastDuration = isRemoval
+    ? 7000
+    : isFinal
+      ? Math.max(1, Number(payload.grace_seconds || 15)) * 1000
+      : isHigh
+        ? 9000
+        : TOAST_DURATION_MS;
   monitoringToastTimer = setTimeout(() => {
-    closeMonitoringToastWindow();
-  }, toastDuration);
+    if (!monitoringToastWindow || monitoringToastWindow.isDestroyed()) return;
+    monitoringToastWindow.webContents.executeJavaScript(
+      'document.querySelector(".toast")?.classList.add("leaving")',
+    ).catch(() => {});
+    setTimeout(() => closeMonitoringToastWindow(), 280);
+  }, Math.max(500, toastDuration - 280));
 }
 
 function pickField(data, ...keys) {

@@ -66,6 +66,9 @@ async def process_detection(assessment_id: str, candidate_id: str, exam_id: str,
             "warning_count": warning_count + 1,
             "violation_count": violation_count,
             "allowed_limit": allowed_limit,
+            "remaining_violations": max(0, allowed_limit - violation_count),
+            "grace_active": False,
+            "grace_seconds": 0,
         }
     else:
         vtype = DETAIL_TO_VIOLATION_TYPE.get(detail, detail)
@@ -92,8 +95,6 @@ async def process_detection(assessment_id: str, candidate_id: str, exam_id: str,
             if locked or warning_level == "REMOVAL"
             else "final_warning"
             if final_warning or warning_level == "FINAL"
-            else "grace_period"
-            if grace_active
             else "violation"
         )
         return {
@@ -109,16 +110,17 @@ async def process_detection(assessment_id: str, candidate_id: str, exam_id: str,
             "grace_until": result.get("grace_until"),
             "warning_level": warning_level,
             "message": (
-                f"Final warning: {result.get('violation_count', 0)} of {result.get('allowed_limit', 0)} violations. Another confirmed violation will remove you from this assessment. Correct the issue within 15 seconds."
-                if final_warning else
-                "Grace period active. Correct the detected issue now."
-                if grace_active else
-                f"You have reached {result.get('violation_count', 0)} of {result.get('allowed_limit', 0)} allowed violations. You are being removed from this assessment. Re-entry requires examiner approval."
+                f"You have been disqualified from this assessment after reaching {result.get('violation_count', 0)} of {result.get('allowed_limit', 0)} allowed violations. Re-entry requires examiner approval."
                 if locked else
+                f"Final warning: {result.get('violation_count', 0)} of {result.get('allowed_limit', 0)} violations. You are one confirmed violation away from disqualification. Correct the detected behavior during the grace period."
+                if final_warning else
+                f"High warning: {result.get('violation_count', 0)} of {result.get('allowed_limit', 0)} violations. You are close to disqualification."
+                if warning_level == "HIGH" else
                 f"Violation recorded: {vtype}"
             ),
             "violation_count": result.get("violation_count", 0),
             "allowed_limit": result.get("allowed_limit", 0),
+            "remaining_violations": result.get("remaining_violations", 0),
             "risk_score": result.get("risk_score", 0),
             "violation": result.get("violation"),
         }

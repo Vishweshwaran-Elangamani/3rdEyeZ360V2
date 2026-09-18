@@ -110,16 +110,70 @@ async def log_violation(
     )
     current_risk = int((assessment or {}).get("risk_score", 0) or 0)
     now = datetime.utcnow()
+    grace_until = (assessment or {}).get("violation_grace_until")
+    final_warning_issued = bool((assessment or {}).get("final_violation_warning_issued"))
+
+    # The final warning is issued exactly one confirmed violation before the
+    # configured limit. The 15-second correction window is persisted so every
+    # client and reconnect observes the same server-authoritative deadline.
+    if current_count == max(1, allowed_limit - 1) and not final_warning_issued:
+        grace_until = now + timedelta(seconds=15)
+        await db.assessments.update_one(
+            {"assessment_id": assessment_id},
+            {"$set": {
+                "final_violation_warning_issued": True,
+                "violation_grace_until": grace_until,
+                "violation_threshold": allowed_limit,
+                "violationthreshold": allowed_limit,
+                "updated_at": now,
+            }},
+        )
+        return {
+            "locked": False,
+            "final_warning": True,
+            "grace_active": True,
+            "warning_level": "FINAL",
+            "grace_seconds": 15,
+            "grace_until": grace_until,
+            "violation_count": current_count,
+            "allowed_limit": allowed_limit,
+            "remaining_violations": 1,
+            "risk_score": current_risk,
+            "violation": violation,
+        }
+
+    # A violation reaching the limit during the correction window does not
+    # remove the candidate before the promised grace period has elapsed.
+    if current_count >= allowed_limit and isinstance(grace_until, datetime) and now < grace_until:
+        seconds_left = max(1, int((grace_until - now).total_seconds()))
+        return {
+            "locked": False,
+            "final_warning": True,
+            "grace_active": True,
+            "warning_level": "FINAL",
+            "grace_seconds": seconds_left,
+            "grace_until": grace_until,
+            "violation_count": current_count,
+            "allowed_limit": allowed_limit,
+            "remaining_violations": 0,
+            "risk_score": current_risk,
+            "violation": violation,
+        }
 
     if current_count >= allowed_limit:
         await db.assessments.update_one(
             {"assessment_id": assessment_id},
             {"$set": {
                 "status": "LOCKED",
+                "assessment_status": "LOCKED",
+                "final_status": "LOCKED",
                 "threshold_reached": True,
                 "thresholdreached": True,
+                "requires_reentry_approval": True,
+                "requiresreentryapproval": True,
                 "violation_threshold": allowed_limit,
                 "violationthreshold": allowed_limit,
+                "violation_grace_until": None,
                 "updated_at": now,
             }},
         )
@@ -129,28 +183,7 @@ async def log_violation(
             "warning_level": "REMOVAL",
             "violation_count": current_count,
             "allowed_limit": allowed_limit,
-            "risk_score": current_risk,
-            "violation": violation,
-        }
-
-    if current_count == max(1, allowed_limit - 1):
-        grace_until = now + timedelta(seconds=15)
-        await db.assessments.update_one(
-            {"assessment_id": assessment_id},
-            {"$set": {
-                "final_violation_warning_issued": True,
-                "violation_grace_until": grace_until,
-                "updated_at": now,
-            }},
-        )
-        return {
-            "locked": False,
-            "final_warning": True,
-            "warning_level": "FINAL",
-            "grace_seconds": 15,
-            "grace_until": grace_until,
-            "violation_count": current_count,
-            "allowed_limit": allowed_limit,
+            "remaining_violations": 0,
             "risk_score": current_risk,
             "violation": violation,
         }
@@ -162,6 +195,7 @@ async def log_violation(
         "warning_level": warning_level,
         "violation_count": current_count,
         "allowed_limit": allowed_limit,
+        "remaining_violations": max(0, allowed_limit - current_count),
         "risk_score": current_risk,
         "violation": violation,
     }

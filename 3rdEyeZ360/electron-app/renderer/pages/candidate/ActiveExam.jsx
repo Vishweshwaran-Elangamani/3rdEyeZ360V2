@@ -741,6 +741,7 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
   const thresholdExitRef = useRef(false);
   const automaticEndRef = useRef(false);
   const removalNoticeRef = useRef(false);
+  const removalRedirectTimerRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -1009,6 +1010,33 @@ try {
     [cleanupExamShell, clearWaitingSession, onReturnToDashboard],
   );
 
+  const confirmDisqualificationExit = useCallback(async () => {
+    if (removalRedirectTimerRef.current) {
+      window.clearTimeout(removalRedirectTimerRef.current);
+      removalRedirectTimerRef.current = null;
+    }
+    await exitForViolationThreshold({
+      violation_count: progressiveWarning?.count ?? violationCount,
+      allowed_limit: progressiveWarning?.limit ?? violationLimit,
+      threshold_reached: true,
+      status: "LOCKED",
+    });
+  }, [exitForViolationThreshold, progressiveWarning, violationCount, violationLimit]);
+  const scheduleDisqualificationExit = useCallback((payload) => {
+    if (removalRedirectTimerRef.current) {
+      window.clearTimeout(removalRedirectTimerRef.current);
+    }
+    removalRedirectTimerRef.current = window.setTimeout(() => {
+      removalRedirectTimerRef.current = null;
+      void exitForViolationThreshold(payload);
+    }, 12000);
+  }, [exitForViolationThreshold]);
+  useEffect(() => () => {
+    if (removalRedirectTimerRef.current) {
+      window.clearTimeout(removalRedirectTimerRef.current);
+      removalRedirectTimerRef.current = null;
+    }
+  }, []);
   const loadCandidateViolations = useCallback(async ({ silent = false } = {}) => {
     if (!assessmentId || !accessToken) return;
     if (!silent) setViolationsLoading(true);
@@ -1041,9 +1069,11 @@ try {
     const unsubscribe = window.electronAPI.onDetectionResult((payload) => {
       console.log("[DETECTION RESULT]", payload);
       setTimeout(() => void loadCandidateViolations({ silent: true }), 250);
-      const warningPayload = payload?.backend || payload?.response || payload?.result || payload;
+      const warningPayload = payload?.persisted === true
+        ? (payload?.backend || payload?.response || null)
+        : null;
       const warningAction = canonicalStatus(warningPayload?.action);
-      if (["TOAST", "VIOLATION", "FINALWARNING", "GRACEPERIOD"].includes(warningAction)) {
+      if (warningPayload && ["TOAST", "VIOLATION", "FINALWARNING"].includes(warningAction)) {
         const finalWarning = warningAction === "FINALWARNING" || warningPayload?.final_warning === true;
         const graceActive = warningAction === "GRACEPERIOD" || warningPayload?.grace_active === true;
         setProgressiveWarning({
@@ -1056,14 +1086,9 @@ try {
         setWarningSecondsLeft(Number(warningPayload?.grace_seconds || 0));
       }
 
-      const candidates = [
-        payload?.backend,
-        payload?.response,
-        payload?.result,
-        payload,
-        payload?.assessment,
-        ...(Array.isArray(payload?.results) ? payload.results : []),
-      ].filter(Boolean);
+      const candidates = payload?.persisted === true
+        ? [payload?.backend, payload?.response].filter(Boolean)
+        : [];
 
       const thresholdPayload = candidates.find((item) => {
         const action = canonicalStatus(item?.action);
@@ -1084,14 +1109,15 @@ try {
         const removalLimit = Number(thresholdPayload?.allowed_limit || thresholdPayload?.allowedlimit || 0);
         setProgressiveWarning({
           level: "REMOVAL",
-          message: `You have reached ${removalCount} of ${removalLimit || "the allowed"} violations. You are being removed from this assessment. Re-entry requires examiner approval.`,
-          type: thresholdPayload?.violation?.type || thresholdPayload?.violation?.detail || "Violation limit reached",
+          message: "The maximum number of confirmed violations has been reached. Your assessment session has been ended in accordance with the examination monitoring rules.",
+          type: "Assessment access revoked",
           count: removalCount,
           limit: removalLimit,
         });
         setWarningSecondsLeft(0);
         removalNoticeRef.current = true;
-        window.setTimeout(() => void exitForViolationThreshold(thresholdPayload), 5500);
+        void window.electronAPI?.hideBrowser?.();
+        scheduleDisqualificationExit(thresholdPayload);
       }
     });
 
@@ -1103,7 +1129,7 @@ try {
         console.error(error);
       }
     };
-  }, [exitForViolationThreshold, loadCandidateViolations]);
+  }, [exitForViolationThreshold, loadCandidateViolations, scheduleDisqualificationExit]);
 
   useEffect(() => {
     if (!progressiveWarning || warningSecondsLeft <= 0) return undefined;
@@ -1121,14 +1147,15 @@ try {
     const limit = Number(pick(payload?.allowedlimit, payload?.allowed_limit, payload?.violationthreshold, payload?.violation_threshold, payload?.assessment?.violationthreshold, payload?.assessment?.violation_threshold, violationLimit, 0) || 0);
     setProgressiveWarning({
       level: "REMOVAL",
-      message: `You have reached ${count} of ${limit || "the allowed"} violations. You are being removed from this assessment. Re-entry requires examiner approval.`,
-      type: "Violation limit reached",
+      message: "The maximum number of confirmed violations has been reached. Your assessment session has been ended in accordance with the examination monitoring rules.",
+      type: "Assessment access revoked",
       count,
       limit,
     });
     setWarningSecondsLeft(0);
-    window.setTimeout(() => void exitForViolationThreshold({ ...payload, violation_count: count, allowed_limit: limit }), 5500);
-  }, [exitForViolationThreshold, violationCount, violationLimit]);
+    void window.electronAPI?.hideBrowser?.();
+    scheduleDisqualificationExit({ ...payload, violation_count: count, allowed_limit: limit });
+  }, [scheduleDisqualificationExit, violationCount, violationLimit]);
   const reportInterruption = useCallback(async (reason, source) => {
     if (!entryGrantedRef.current || completedRef.current || intentionalExitRef.current || !assessmentId || !accessToken) {
       return;
@@ -1366,7 +1393,7 @@ clearWaitingSession();
   }, []);
 
   const showBrowserForActiveState = useCallback(async () => {
-    if (!window.electronAPI || completedRef.current || violationsOpen) return false;
+    if (!window.electronAPI || completedRef.current || violationsOpen || progressiveWarning?.level === "REMOVAL") return false;
     const shown = await safeElectron(() => window.electronAPI.showBrowser(), "Failed to show secured browser.", { silent: true });
     if (!shown) return false;
     const resized = await safeElectron(() => resizeBrowserToArea(), "Failed to resize BrowserView", { silent: false });
@@ -1375,7 +1402,7 @@ clearWaitingSession();
     // Routine status polling, Socket.IO updates, and resize synchronization must
     // never steal keyboard focus from the embedded React chat composer.
     return true;
-  }, [resizeBrowserToArea, safeElectron, violationsOpen]);
+  }, [resizeBrowserToArea, safeElectron, violationsOpen, progressiveWarning?.level]);
 
   const hideBrowserForPause = useCallback(async () => {
     if (!window.electronAPI || completedRef.current || !browserOpenedRef.current) return false;
@@ -2736,30 +2763,51 @@ setPauseLocked(false);
         </div>
       </div>
 
-      {false && progressiveWarning ? (
-        ["FINAL", "REMOVAL"].includes(progressiveWarning.level) ? (
-          <div role="alertdialog" aria-modal="true" aria-live="assertive" style={{ position: "fixed", inset: 0, zIndex: 1500, background: t.overlay, backdropFilter: "blur(14px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-            <div style={{ width: "min(620px, 100%)", padding: "30px 32px", borderRadius: 22, background: t.surfaceSolid, border: `2px solid ${t.danger}99`, boxShadow: `0 32px 100px rgba(0,0,0,0.7), 0 0 50px ${t.danger}25`, textAlign: "center" }}>
-              <div style={{ width: 68, height: 68, margin: "0 auto 16px", borderRadius: 20, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", background: t.dangerGradient, boxShadow: `0 12px 35px ${t.danger}55` }}><svg width="31" height="31" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
-              <div style={{ color: t.danger, fontSize: 12, fontWeight: 900, letterSpacing: 1.8, textTransform: "uppercase" }}>{progressiveWarning.level === "REMOVAL" ? "Violation limit reached" : "Final warning"}</div>
-              <div style={{ marginTop: 10, color: t.textPrimary, fontSize: 25, fontWeight: 800, fontFamily: "'Space Grotesk', sans-serif" }}>{progressiveWarning.level === "REMOVAL" ? "You are being removed" : "One violation away from removal"}</div>
-              <div style={{ margin: "14px auto 0", maxWidth: 500, color: t.textSecondary, fontSize: 15, lineHeight: 1.65 }}>{progressiveWarning.message}</div>
-              <div style={{ marginTop: 20, display: "inline-flex", alignItems: "center", gap: 12, padding: "10px 16px", borderRadius: 999, background: t.dangerBg, border: `1px solid ${t.danger}55`, color: t.textPrimary, fontWeight: 800 }}>
-                <span>{progressiveWarning.count} / {progressiveWarning.limit || "—"} violations</span>
-                {warningSecondsLeft > 0 ? <span style={{ color: t.danger, fontFamily: "'JetBrains Mono', monospace" }}>{warningSecondsLeft}s grace period</span> : null}
-              </div>
-              <div style={{ marginTop: 18, color: t.textMuted, fontSize: 11.5 }}>{progressiveWarning.level === "REMOVAL" ? "Returning to the dashboard. Re-entry requires examiner approval." : "Correct the detected behavior immediately. Monitoring and the assessment timer continue."}</div>
+      {progressiveWarning?.level === "REMOVAL" ? (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="disqualification-title"
+          aria-describedby="disqualification-description"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1600,
+            background: t.overlay,
+            backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            animation: "fadeIn 0.3s ease",
+          }}
+        >
+          <div style={{ width: "min(620px, 100%)", padding: "32px", borderRadius: 24, background: t.surfaceSolid, border: `2px solid ${t.danger}88`, boxShadow: `0 34px 100px rgba(0,0,0,0.72), 0 0 58px ${t.danger}28`, textAlign: "center" }}>
+            <div style={{ width: 72, height: 72, margin: "0 auto 18px", borderRadius: 22, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", background: t.dangerGradient, boxShadow: `0 14px 38px ${t.danger}55` }}>
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
             </div>
+            <div style={{ color: t.danger, fontSize: 11, fontWeight: 900, letterSpacing: 1.8, textTransform: "uppercase" }}>Violation limit reached</div>
+            <h2 id="disqualification-title" style={{ margin: "10px 0 0", color: t.textPrimary, fontSize: 28, fontWeight: 800, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.5 }}>Assessment Access Revoked</h2>
+            <p id="disqualification-description" style={{ margin: "15px auto 0", maxWidth: 520, color: t.textSecondary, fontSize: 15, lineHeight: 1.7 }}>
+              {progressiveWarning.message}
+            </p>
+            <div style={{ margin: "20px auto 0", display: "inline-flex", alignItems: "center", gap: 10, padding: "10px 16px", borderRadius: 999, background: t.dangerBg, border: `1px solid ${t.danger}55`, color: t.textPrimary, fontWeight: 800 }}>
+              <span>{progressiveWarning.count} / {progressiveWarning.limit || "—"} confirmed violations</span>
+            </div>
+            <div style={{ marginTop: 18, padding: 14, borderRadius: 12, background: t.surfaceGlass, border: `1px solid ${t.border}`, color: t.textSecondary, fontSize: 12.5, lineHeight: 1.6 }}>
+              You will now be returned to the Candidate Dashboard. If this action requires review, submit a re-entry request for Examiner approval.
+            </div>
+            <button
+              type="button"
+              onClick={() => void confirmDisqualificationExit()}
+              style={{ marginTop: 22, minWidth: 220, minHeight: 46, padding: "0 20px", border: "none", borderRadius: 12, background: t.dangerGradient, color: "#fff", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 800, boxShadow: `0 12px 30px ${t.danger}40` }}
+            >
+              Return to Dashboard
+            </button>
+            <div style={{ marginTop: 12, color: t.textMuted, fontSize: 10.5 }}>The dashboard will open automatically if no action is taken.</div>
           </div>
-        ) : (
-          <div role="alert" aria-live="assertive" style={{ position: "fixed", top: 76, right: 18, zIndex: 1300, width: 340, padding: 16, borderRadius: 15, background: t.surfaceSolid, border: `1px solid ${progressiveWarning.level === "HIGH" ? t.danger : t.warning}88`, boxShadow: "0 18px 50px rgba(0,0,0,0.45)" }}>
-            <div style={{ color: progressiveWarning.level === "HIGH" ? t.danger : t.warning, fontSize: 10, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>{progressiveWarning.level === "HIGH" ? "High warning · Close to removal" : "Monitoring warning"}</div>
-            <div style={{ marginTop: 5, color: t.textPrimary, fontSize: 15, fontWeight: 800 }}>{formatViolationLabel(progressiveWarning.type)}</div>
-            <div style={{ marginTop: 7, color: t.textSecondary, fontSize: 12.5, lineHeight: 1.5 }}>{progressiveWarning.message}</div>
-            <div style={{ marginTop: 10, color: t.textMuted, fontSize: 11 }}><strong style={{ color: t.textPrimary }}>{progressiveWarning.count} / {progressiveWarning.limit || "—"}</strong>{progressiveWarning.level === "HIGH" ? <span style={{ marginLeft: 8, color: t.danger, fontWeight: 800 }}>You are close to disqualification</span> : null}</div>
-            <button type="button" onClick={dismissProgressiveWarning} aria-label="Dismiss warning" style={{ position: "absolute", top: 10, right: 10, width: 25, height: 25, borderRadius: 7, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textSecondary, cursor: "pointer" }}>×</button>
-          </div>
-        )
+        </div>
       ) : null}
       {violationsOpen ? (
         <div
