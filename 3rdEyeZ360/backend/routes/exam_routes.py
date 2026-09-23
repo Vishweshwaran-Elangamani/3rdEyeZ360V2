@@ -12,7 +12,9 @@ from sockets.monitoring_socket import emit_exam_event, emit_assessment_event
 from services.email_service import (
     send_exam_assignment_email,
     send_exam_removal_email,
+    send_assessment_report_shared_email,
 )
+from services.assessment_service import log_audit
 from services.exam_session_service import (
     is_assessment_finalized,
     is_multi_session_exam,
@@ -1294,6 +1296,125 @@ async def stop_exam(exam_id: str, current_user=Depends(require_role("Examiner", 
     payload = _exam_payload(updated_exam)
     await emit_exam_event("exam_updated", payload)
     return {"message": "Exam completed permanently", "exam": payload, **payload}
+
+def _shared_report_snapshot(exam: dict, assessment: dict, candidate: dict, violations: list[dict]) -> dict:
+    start_time = assessment.get("activetime") or assessment.get("active_time") or assessment.get("jointime") or assessment.get("join_time")
+    end_time = assessment.get("exittime") or assessment.get("exit_time") or assessment.get("finalizedat") or assessment.get("finalized_at")
+    return {
+        "assessment_name": exam.get("name") or exam.get("examname") or "Assessment",
+        "candidate_name": candidate.get("name") or assessment.get("candidate_id") or assessment.get("candidateid"),
+        "candidate_id": assessment.get("candidate_id") or assessment.get("candidateid"),
+        "start_time": start_time,
+        "end_time": end_time,
+        "final_status": _normalize_status(assessment.get("finalstatus") or assessment.get("final_status") or assessment.get("assessmentstatus") or assessment.get("assessment_status") or assessment.get("status"), "ASSIGNED"),
+        "credibility_score": int(assessment.get("credibility_score", assessment.get("credibilityscore", 100)) or 0),
+        "violation_count": int(assessment.get("violation_count", assessment.get("violationcount", len(violations))) or 0),
+        "violation_limit": int(exam.get("violation_threshold", exam.get("violationthreshold", 10)) or 10),
+        "violations": [{
+            "violation_id": item.get("violation_id") or item.get("violationid"),
+            "violationid": item.get("violationid") or item.get("violation_id"),
+            "type": item.get("type") or item.get("detail") or "Violation",
+            "message": item.get("message") or item.get("detail") or "Violation recorded",
+            "timestamp": item.get("createdat") or item.get("created_at") or item.get("timestamp"),
+            "evidence_available": bool(
+                item.get("evidenceavailable") or item.get("evidence_available")
+                or item.get("evidenceobject") or item.get("evidence_object")
+                or item.get("screenshotpath") or item.get("screenshot_path")
+            ),
+            "evidenceavailable": bool(
+                item.get("evidenceavailable") or item.get("evidence_available")
+                or item.get("evidenceobject") or item.get("evidence_object")
+                or item.get("screenshotpath") or item.get("screenshot_path")
+            ),
+        } for item in violations],
+    }
+
+@router.post("/{exam_id}/assessments/{assessment_id}/share-report")
+async def share_individual_assessment_report(exam_id: str, assessment_id: str, current_user=Depends(require_role("Examiner", "Admin"))):
+    db = get_db()
+    exam = await _ensure_exam_access(db, exam_id, current_user)
+    assessment = await db.assessments.find_one({"$and": [
+        {"$or": [{"assessment_id": assessment_id}, {"assessmentid": assessment_id}]},
+        {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]},
+    ]})
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Candidate assessment not found")
+    candidate_id = str(assessment.get("candidate_id") or assessment.get("candidateid") or "")
+    candidate = await db.users.find_one(_get_user_query(candidate_id))
+    if not candidate or candidate.get("role") != "Candidate":
+        raise HTTPException(status_code=404, detail="Candidate account not found")
+    violations = await db.violations.find({"$or": [{"assessment_id": assessment_id}, {"assessmentid": assessment_id}]}).sort([("createdat", 1), ("created_at", 1), ("timestamp", 1)]).to_list(None)
+    now = datetime.utcnow()
+    share_id = f"SHR-{uuid.uuid4().hex[:8].upper()}"
+    actor_id = current_user.get("user_id") or current_user.get("userid")
+    snapshot = _shared_report_snapshot(exam, assessment, candidate, violations)
+    share_doc = {
+        "share_id": share_id, "shareid": share_id,
+        "exam_id": exam_id, "examid": exam_id,
+        "assessment_id": assessment_id, "assessmentid": assessment_id,
+        "candidate_id": candidate_id, "candidateid": candidate_id,
+        "shared_by": actor_id, "sharedby": actor_id,
+        "shared_at": now, "sharedat": now,
+        "status": "SHARED", "channel": "IN_APP", "snapshot": snapshot,
+        "view_count": 0, "viewcount": 0, "last_viewed_at": None, "lastviewedat": None,
+    }
+    await db.shared_assessment_reports.insert_one(share_doc)
+    await log_audit(actor_id, "ShareAssessmentReport", "Shared individual assessment report in-app", exam_id, assessment_id, f"share_id={share_id}; channel=IN_APP", candidate_id, {"share_id": share_id, "channel": "IN_APP", "status": "SUCCESS"})
+    # Reuse the existing candidate-targeted assessment socket channel. This lets
+    # an already-open Candidate Dashboard refresh immediately after sharing.
+    await emit_assessment_event("assessment_report_shared", {
+        "candidate_id": candidate_id,
+        "candidateid": candidate_id,
+        "assessment_id": assessment_id,
+        "assessmentid": assessment_id,
+        "exam_id": exam_id,
+        "examid": exam_id,
+        "share_id": share_id,
+        "shareid": share_id,
+        "shared_at": now,
+        "sharedat": now,
+        "snapshot": snapshot,
+    })
+    email_sent = False
+    if candidate.get("email"):
+        try:
+            await send_assessment_report_shared_email(candidate.get("email"), candidate.get("name") or candidate_id, exam)
+            email_sent = True
+        except Exception:
+            logger.exception("Shared report notification email failed for %s", candidate_id)
+    return {"message": "Report shared securely with the candidate", "share_id": share_id, "shared_at": now, "email_sent": email_sent}
+
+@router.get("/candidate/shared-reports")
+async def get_candidate_shared_reports(current_user=Depends(require_role("Candidate"))):
+    db = get_db()
+    candidate_id = current_user.get("user_id") or current_user.get("userid")
+    rows = await db.shared_assessment_reports.find({"$or": [{"candidate_id": candidate_id}, {"candidateid": candidate_id}], "status": "SHARED"}).sort("shared_at", -1).to_list(None)
+    return [{
+        "share_id": row.get("share_id") or row.get("shareid"),
+        "exam_id": row.get("exam_id") or row.get("examid"),
+        "assessment_id": row.get("assessment_id") or row.get("assessmentid"),
+        "shared_at": row.get("shared_at") or row.get("sharedat"),
+        "shared_by": row.get("shared_by") or row.get("sharedby"),
+        "status": row.get("status"),
+        "snapshot": row.get("snapshot") or {},
+        "viewed_at": row.get("last_viewed_at") or row.get("lastviewedat"),
+    } for row in rows]
+
+@router.get("/candidate/shared-reports/{share_id}")
+async def get_candidate_shared_report(share_id: str, current_user=Depends(require_role("Candidate"))):
+    db = get_db()
+    candidate_id = current_user.get("user_id") or current_user.get("userid")
+    row = await db.shared_assessment_reports.find_one({"$and": [
+        {"$or": [{"share_id": share_id}, {"shareid": share_id}]},
+        {"$or": [{"candidate_id": candidate_id}, {"candidateid": candidate_id}]},
+        {"status": "SHARED"},
+    ]})
+    if not row:
+        raise HTTPException(status_code=404, detail="Shared report not found")
+    now = datetime.utcnow()
+    await db.shared_assessment_reports.update_one({"_id": row["_id"]}, {"$set": {"last_viewed_at": now, "lastviewedat": now}, "$inc": {"view_count": 1, "viewcount": 1}})
+    await log_audit(candidate_id, "ViewSharedAssessmentReport", "Candidate viewed shared assessment report", row.get("exam_id") or row.get("examid"), row.get("assessment_id") or row.get("assessmentid"), f"share_id={share_id}", candidate_id, {"share_id": share_id})
+    return {"share_id": share_id, "shared_at": row.get("shared_at") or row.get("sharedat"), "snapshot": row.get("snapshot") or {}}
 
 @router.get("/{exam_id}/cumulative-report")
 async def get_exam_cumulative_report(

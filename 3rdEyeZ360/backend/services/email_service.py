@@ -1403,3 +1403,26 @@ async def send_exam_removal_email(
         text_body=text_body,
         html_body=html_body,
     )
+
+def _build_report_shared_content(candidate_name: str, exam: dict) -> tuple[str, str, str]:
+    exam_name = _get_exam_name(exam)
+    subject = f"Assessment Report Available - {exam_name}"
+    text_body = f"""Hello {candidate_name or 'Candidate'},
+Your individual assessment report for {exam_name} has been shared with you.
+Sign in to the 3rdEyeZ360 application and open Shared Assessment Reports to view it securely.
+The report is available only through your authenticated candidate account.
+Regards,
+3rdEyeZ360 Team
+"""
+    main_content = f"""
+    <p style="margin:0 0 18px;">Your individual assessment report for <strong>{html.escape(exam_name)}</strong> is now available.</p>
+    <div style="padding:16px;background:#eff6ff;border-left:4px solid #2563eb;border-radius:6px;color:#1e3a8a;">
+      Sign in to the 3rdEyeZ360 application and open <strong>Shared Assessment Reports</strong> to view it securely.
+    </div>
+    <p style="margin:20px 0 0;color:#4b5563;">For your privacy, the detailed report is not attached to this email.</p>
+    """
+    return subject, text_body, _build_email_layout("Assessment Report Available", candidate_name, main_content, "#2563eb")
+
+async def send_assessment_report_shared_email(candidate_email: str, candidate_name: str, exam: dict) -> None:
+    subject, text_body, html_body = _build_report_shared_content(candidate_name, exam)
+    await _send_email(candidate_email, subject, text_body, html_body)

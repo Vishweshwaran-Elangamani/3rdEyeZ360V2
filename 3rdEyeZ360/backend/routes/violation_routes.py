@@ -6,6 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 from config.database import get_db
 from middleware.auth import require_role
 from services.evidence_service import get_evidence_base64
+from services.assessment_service import log_audit
 
 router = APIRouter(prefix="/api/violations", tags=["Violations"])
 
@@ -311,6 +312,72 @@ async def get_violations_by_assessment(
 
     return [_normalize_violation(item) for item in violations]
 
+
+@router.get("/shared-report/{share_id}/violations/{violation_id}/evidence")
+async def get_shared_report_violation_evidence(
+    share_id: str,
+    violation_id: str,
+    current_user=Depends(require_role("Candidate")),
+):
+    db = get_db()
+    candidate_id = _user_id(current_user)
+    report = await db.shared_assessment_reports.find_one({"$and": [
+        {"$or": [{"share_id": share_id}, {"shareid": share_id}]},
+        {"$or": [{"candidate_id": candidate_id}, {"candidateid": candidate_id}]},
+        {"status": "SHARED"},
+    ]})
+    if not report:
+        raise HTTPException(status_code=404, detail="Shared report not found")
+
+    snapshot = report.get("snapshot") or {}
+    shared_violation = next((item for item in snapshot.get("violations", []) if str(
+        item.get("violation_id") or item.get("violationid") or ""
+    ) == str(violation_id)), None)
+    if not shared_violation or not bool(shared_violation.get("evidence_available") or shared_violation.get("evidenceavailable")):
+        raise HTTPException(status_code=404, detail="Image proof was not included in this shared report")
+
+    violation = await db.violations.find_one(_violation_query(violation_id))
+    if not violation:
+        raise HTTPException(status_code=404, detail="Violation not found")
+    report_assessment_id = report.get("assessment_id") or report.get("assessmentid")
+    violation_assessment_id = violation.get("assessment_id") or violation.get("assessmentid")
+    violation_candidate_id = violation.get("candidate_id") or violation.get("candidateid")
+    if str(report_assessment_id) != str(violation_assessment_id) or str(candidate_id) != str(violation_candidate_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    evidence_object = (
+        violation.get("evidenceobject") or violation.get("evidence_object")
+        or violation.get("screenshotpath") or violation.get("screenshot_path")
+    )
+    if not evidence_object:
+        raise HTTPException(status_code=404, detail="Image proof is not available")
+    try:
+        evidence_content = await run_in_threadpool(get_evidence_base64, evidence_object)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail="Image proof could not be loaded") from error
+
+    data_url = evidence_content.get("dataurl") or evidence_content.get("data_url")
+    if not data_url:
+        raise HTTPException(status_code=500, detail="Image proof data is empty")
+    await log_audit(
+        candidate_id, "ViewSharedAssessmentReportEvidence",
+        "Candidate viewed image proof from a shared assessment report",
+        report.get("exam_id") or report.get("examid"), report_assessment_id,
+        f"share_id={share_id}; violation_id={violation_id}", candidate_id,
+        {"share_id": share_id, "violation_id": violation_id},
+    )
+    return {
+        "share_id": share_id,
+        "violation_id": violation_id,
+        "type": shared_violation.get("type") or "Violation",
+        "timestamp": shared_violation.get("timestamp"),
+        "content_type": evidence_content.get("contenttype") or evidence_content.get("content_type") or "image/jpeg",
+        "data_url": data_url,
+    }
 
 @router.get("/{violation_id}/evidence")
 async def get_violation_evidence(

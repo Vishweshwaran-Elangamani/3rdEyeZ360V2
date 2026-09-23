@@ -2015,6 +2015,11 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [sharedReports, setSharedReports] = useState([]);
+  const [sharedReportsLoading, setSharedReportsLoading] = useState(false);
+  const [selectedSharedReport, setSelectedSharedReport] = useState(null);
+  const [selectedEvidence, setSelectedEvidence] = useState(null);
+  const [evidenceLoadingId, setEvidenceLoadingId] = useState("");
 
   const firstLoadResolvedRef = useRef(false);
   const lastUpdatedRef = useRef(null);
@@ -2025,6 +2030,42 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
     return () => clearInterval(id);
   }, []);
 
+  const fetchSharedReports = useCallback(async (silent = false) => {
+    if (!accessToken) return;
+    if (!silent) setSharedReportsLoading(true);
+    try {
+      const response = await axios.get(`${API}/api/exams/candidate/shared-reports`, { headers });
+      setSharedReports(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error("load shared reports", error);
+    } finally {
+      if (!silent) setSharedReportsLoading(false);
+    }
+  }, [accessToken, headers]);
+  const openSharedReport = useCallback(async (shareId) => {
+    try {
+      const response = await axios.get(`${API}/api/exams/candidate/shared-reports/${shareId}`, { headers });
+      setSelectedSharedReport(response.data || null);
+      setSharedReports((current) => current.map((item) => item.share_id === shareId ? { ...item, viewed_at: new Date().toISOString() } : item));
+    } catch (error) { setError(formatApiError(error, "Shared report could not be opened.")); }
+  }, [headers]);
+  const openSharedEvidence = useCallback(async (violation) => {
+    const shareId = selectedSharedReport?.share_id;
+    const violationId = violation?.violation_id || violation?.violationid;
+    if (!shareId || !violationId) return;
+    setEvidenceLoadingId(violationId);
+    try {
+      const response = await axios.get(
+        `${API}/api/violations/shared-report/${shareId}/violations/${violationId}/evidence`,
+        { headers },
+      );
+      setSelectedEvidence(response.data || null);
+    } catch (error) {
+      setError(formatApiError(error, "Image proof could not be opened."));
+    } finally {
+      setEvidenceLoadingId("");
+    }
+  }, [headers, selectedSharedReport]);
   const reconcileAssessment = useCallback(
     async (item) => {
       if (!item?.assessmentid) return item;
@@ -2138,7 +2179,21 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
 
   useEffect(() => {
     fetchAssessments(false);
-  }, [fetchAssessments]);
+    fetchSharedReports(false);
+  }, [fetchAssessments, fetchSharedReports]);
+  useEffect(() => {
+    if (!accessToken) return undefined;
+    const refreshSharedReports = () => void fetchSharedReports(true);
+    const intervalId = window.setInterval(refreshSharedReports, 15000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshSharedReports();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [accessToken, fetchSharedReports]);
   useEffect(() => {
     if (!socket) return;
 
@@ -2232,6 +2287,31 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
       }));
     };
 
+    const onAssessmentReportShared = (payload) => {
+      if (!matchesCandidate(payload)) return;
+      const shareId = firstValue(payload?.share_id, payload?.shareid);
+      if (!shareId) {
+        void fetchSharedReports(true);
+        return;
+      }
+      const nextReport = {
+        share_id: shareId,
+        exam_id: firstValue(payload?.exam_id, payload?.examid),
+        assessment_id: firstValue(payload?.assessment_id, payload?.assessmentid),
+        shared_at: firstValue(payload?.shared_at, payload?.sharedat, new Date().toISOString()),
+        status: "SHARED",
+        snapshot: payload?.snapshot || {},
+        viewed_at: null,
+      };
+      setSharedReports((current) => [
+        nextReport,
+        ...current.filter((item) => item.share_id !== shareId),
+      ]);
+    };
+    const onSocketConnect = () => {
+      void fetchAssessments(true);
+      void fetchSharedReports(true);
+    };
     const onRequestReviewed = (payload) => {
       if (!matchesCandidate(payload)) return;
 
@@ -2303,7 +2383,8 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
     socket.on("exam_updated", upsertExam);
     socket.on("request_created", onRequestCreated);
     socket.on("request_reviewed", onRequestReviewed);
-    socket.on("connect", fetchAssessments);
+    socket.on("assessment_report_shared", onAssessmentReportShared);
+    socket.on("connect", onSocketConnect);
 
     return () => {
       socket.off("assessment_created", upsertAssessment);
@@ -2313,9 +2394,10 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
       socket.off("exam_updated", upsertExam);
       socket.off("request_created", onRequestCreated);
       socket.off("request_reviewed", onRequestReviewed);
-      socket.off("connect", fetchAssessments);
+      socket.off("assessment_report_shared", onAssessmentReportShared);
+      socket.off("connect", onSocketConnect);
     };
-  }, [socket, user, fetchAssessments, reconcileAssessment]);
+  }, [socket, user, fetchAssessments, fetchSharedReports, reconcileAssessment]);
 
   const allottedCount = assessments.length;
   const completedCount = assessments.filter((assessment) => {
@@ -2776,7 +2858,7 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
           )}
 
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
-          <IconMorphButton theme={theme} refreshing={refreshing} loading={loading} onClick={() => fetchAssessments(false)} />
+          <IconMorphButton theme={theme} refreshing={refreshing} loading={loading} onClick={() => { fetchAssessments(false); fetchSharedReports(false); }} />
           <LogoutButton onLogout={onLogout} theme={theme} />
         </div>
       </header>
@@ -3016,6 +3098,7 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
             />
           </div>
 
+          <div style={{ marginBottom: 28 }}><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}><div><h3 style={{ margin: 0, color: t.textPrimary, fontSize: 19, fontFamily: "'Space Grotesk', sans-serif" }}>Shared Assessment Reports</h3><p style={{ margin: "4px 0 0", color: t.textMuted, fontSize: 12.5 }}>Reports securely shared by your examiner.</p></div><span style={{ padding: "4px 10px", borderRadius: 999, background: t.accentSoft, color: t.accent, fontWeight: 800, fontSize: 11 }}>{sharedReports.length}</span></div>{sharedReportsLoading ? <div style={{ color: t.textMuted, padding: 18 }}>Loading shared reports...</div> : sharedReports.length === 0 ? <div style={{ padding: 18, borderRadius: 14, border: `1px dashed ${t.borderStrong}`, color: t.textMuted }}>No reports have been shared with you yet.</div> : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>{sharedReports.map((report) => { const snapshot=report.snapshot||{}; return <div key={report.share_id} style={{ padding: 18, borderRadius: 16, background: t.cardSurface, border: `1px solid ${t.border}` }}><div style={{ color: t.textPrimary, fontWeight: 800 }}>{snapshot.assessment_name || "Assessment Report"}</div><div style={{ marginTop: 6, color: t.textMuted, fontSize: 11.5 }}>Shared {report.shared_at ? new Date(report.shared_at).toLocaleString() : "recently"}</div><div style={{ display: "flex", gap: 8, marginTop: 12, color: t.textSecondary, fontSize: 12 }}><span>{snapshot.credibility_score ?? 0}% credibility</span><span>•</span><span>{snapshot.violation_count ?? 0} violations</span></div><button type="button" onClick={() => openSharedReport(report.share_id)} style={{ width: "100%", marginTop: 14, minHeight: 40, border: "none", borderRadius: 10, background: t.accentGradient, color: "#fff", fontWeight: 800, cursor: "pointer" }}>View Report</button></div>; })}</div>}</div>
           <div
             style={{
               display: "flex",
@@ -3208,6 +3291,8 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
         </div>
       </div>
 
+      {selectedSharedReport ? <div style={{ position: "fixed", inset: 0, zIndex: 10020, display: "grid", placeItems: "center", padding: 22, background: t.overlay, backdropFilter: "blur(12px)" }}><div style={{ width: "min(820px,100%)", maxHeight: "calc(100vh - 44px)", overflowY: "auto", padding: 26, borderRadius: 20, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}` }}><div style={{ display: "flex", justifyContent: "space-between", gap: 14 }}><div><div style={{ color: t.accent, fontSize: 10, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>Shared assessment report</div><h2 style={{ margin: "6px 0 0", color: t.textPrimary }}>{selectedSharedReport.snapshot?.assessment_name}</h2></div><button onClick={() => setSelectedSharedReport(null)} style={{ width: 34, height: 34, borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textPrimary, cursor: "pointer" }}>×</button></div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginTop: 20 }}>{[["Start",selectedSharedReport.snapshot?.start_time ? new Date(selectedSharedReport.snapshot.start_time).toLocaleString() : "Not available"],["End",selectedSharedReport.snapshot?.end_time ? new Date(selectedSharedReport.snapshot.end_time).toLocaleString() : "Not available"],["Status",selectedSharedReport.snapshot?.final_status || "Unknown"],["Credibility",`${selectedSharedReport.snapshot?.credibility_score ?? 0}%`],["Violations",`${selectedSharedReport.snapshot?.violation_count ?? 0} / ${selectedSharedReport.snapshot?.violation_limit ?? "—"}`]].map(([label,value]) => <div key={label} style={{ padding: 13, borderRadius: 12, background: t.surfaceGlass, border: `1px solid ${t.border}` }}><div style={{ color: t.textMuted, fontSize: 9, fontWeight: 800, textTransform: "uppercase" }}>{label}</div><div style={{ marginTop: 5, color: t.textPrimary, fontWeight: 800, fontSize: 12 }}>{value}</div></div>)}</div><h3 style={{ color: t.textPrimary, margin: "22px 0 10px" }}>Confirmed violations and timings</h3>{(selectedSharedReport.snapshot?.violations || []).length === 0 ? <div style={{ color: t.textMuted, padding: 16, border: `1px dashed ${t.borderStrong}`, borderRadius: 12 }}>No confirmed violations were included.</div> : <div style={{ display: "grid", gap: 9 }}>{selectedSharedReport.snapshot.violations.map((violation,index) => <div key={`${violation.timestamp}-${index}`} style={{ padding: 12, borderRadius: 11, background: t.dangerBg, border: `1px solid ${t.danger}44` }}><div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><strong style={{ color: t.danger, textTransform: "capitalize" }}>{String(violation.type || "Violation").replaceAll("_"," ")}</strong><span style={{ color: t.textMuted, fontSize: 11 }}>{violation.timestamp ? new Date(violation.timestamp).toLocaleString() : "Time unavailable"}</span></div><div style={{ marginTop: 5, color: t.textSecondary, fontSize: 12.5 }}>{violation.message || "Violation recorded"}</div>{(violation.evidence_available || violation.evidenceavailable) ? <button type="button" disabled={evidenceLoadingId === (violation.violation_id || violation.violationid)} onClick={() => void openSharedEvidence(violation)} style={{ marginTop: 10, padding: "8px 12px", borderRadius: 9, border: `1px solid ${t.danger}55`, background: t.surfaceGlass, color: t.danger, cursor: "pointer", fontWeight: 800, fontSize: 11.5 }}>{evidenceLoadingId === (violation.violation_id || violation.violationid) ? "Loading proof..." : "View Image Proof"}</button> : null}</div>)}</div>}</div></div> : null}
+      {selectedEvidence ? <div role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, zIndex: 10040, display: "grid", placeItems: "center", padding: 22, background: "rgba(0,0,0,.86)", backdropFilter: "blur(12px)" }}><div style={{ width: "min(980px,100%)", maxHeight: "calc(100vh - 44px)", overflow: "auto", padding: 18, borderRadius: 18, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}` }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, marginBottom: 14 }}><div><div style={{ color: t.danger, fontSize: 10, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>Violation image proof</div><div style={{ marginTop: 5, color: t.textPrimary, fontWeight: 800, textTransform: "capitalize" }}>{String(selectedEvidence.type || "Violation").replaceAll("_", " ")}</div><div style={{ marginTop: 4, color: t.textMuted, fontSize: 11 }}>{selectedEvidence.timestamp ? new Date(selectedEvidence.timestamp).toLocaleString() : "Time unavailable"}</div></div><button type="button" onClick={() => setSelectedEvidence(null)} aria-label="Close image proof" style={{ width: 36, height: 36, borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textPrimary, cursor: "pointer", fontSize: 18 }}>×</button></div><div style={{ display: "grid", placeItems: "center", minHeight: 260, padding: 10, borderRadius: 13, background: "#050609" }}><img src={selectedEvidence.data_url} alt={`Image proof for ${String(selectedEvidence.type || "violation").replaceAll("_", " ")}`} style={{ display: "block", maxWidth: "100%", maxHeight: "calc(100vh - 190px)", objectFit: "contain", borderRadius: 8 }} /></div><div style={{ marginTop: 10, color: t.textMuted, fontSize: 10.5, textAlign: "center" }}>Image proof is shown through the authenticated Candidate account. Storage details are not exposed.</div></div></div> : null}
       <RequestModal
         open={requestModalOpen}
         exam={selectedExamForRequest}

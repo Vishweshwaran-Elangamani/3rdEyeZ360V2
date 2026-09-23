@@ -44,6 +44,8 @@ async def log_audit(
     exam_id: str = None,
     assessment_id: str = None,
     detail: str = None,
+    candidate_id: str = None,
+    metadata: dict = None,
 ):
     db = get_db()
     await db.audit_logs.insert_one({
@@ -51,6 +53,10 @@ async def log_audit(
         "user_id": user_id,
         "exam_id": exam_id,
         "assessment_id": assessment_id,
+        "assessmentid": assessment_id,
+        "candidate_id": candidate_id,
+        "candidateid": candidate_id,
+        "metadata": metadata or {},
         "action": action,
         "reason": reason,
         "detail": detail,

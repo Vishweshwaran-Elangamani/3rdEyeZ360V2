@@ -1574,7 +1574,7 @@ function EvidenceModal({ open, theme, evidence, loading, error, onClose }) {
                 textTransform: "capitalize",
               }}
             >
-              {String(evidence?.detail || "Monitoring violation").replaceAll("_", " ")}
+              {String(evidence?.detail || evidence?.type || "Monitoring violation").replaceAll("_", " ")}{evidence?.candidate_name ? ` · ${evidence.candidate_name}` : ""}
               {evidence?.timestamp
                 ? ` · ${new Date(evidence.timestamp).toLocaleString()}`
                 : ""}
@@ -1643,7 +1643,7 @@ function EvidenceModal({ open, theme, evidence, loading, error, onClose }) {
             >
               {error}
             </div>
-          ) : evidence?.imageurl || evidence?.image_url ? (
+          ) : evidence?.imageurl || evidence?.image_url || evidence?.data_url ? (
             <div style={{ display: "grid", gap: 18 }}>
               <div
                 style={{
@@ -1656,7 +1656,7 @@ function EvidenceModal({ open, theme, evidence, loading, error, onClose }) {
                 }}
               >
                 <img
-                  src={evidence.imageurl || evidence.image_url}
+                  src={evidence.imageurl || evidence.image_url || evidence.data_url}
                   alt="Captured violation evidence"
                   style={{
                     display: "block",
@@ -2498,6 +2498,11 @@ function GlobalStyles({ theme }) {
       ::-webkit-scrollbar-track { background: transparent; }
       ::-webkit-scrollbar-thumb { background: ${t.borderStrong}; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
       ::-webkit-scrollbar-thumb:hover { background: ${t.accent}; background-clip: padding-box; }
+      .cumulative-report-scroll { scrollbar-width: thin; scrollbar-color: ${t.accent} ${t.surfaceSolid}; }
+      .cumulative-report-scroll::-webkit-scrollbar { width: 12px; }
+      .cumulative-report-scroll::-webkit-scrollbar-track { background: ${t.surfaceSolid}; border-left: 1px solid ${t.border}; }
+      .cumulative-report-scroll::-webkit-scrollbar-thumb { background: linear-gradient(180deg, ${t.accent}, ${t.accent2}); border-radius: 999px; border: 3px solid ${t.surfaceSolid}; background-clip: padding-box; }
+      .cumulative-report-scroll::-webkit-scrollbar-thumb:hover { background: ${t.accent3}; border: 3px solid ${t.surfaceSolid}; background-clip: padding-box; }
       .gradient-text {
         background: ${t.accentGradient}; background-size: 200% 200%; animation: gradientShift 6s ease infinite;
         -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; display: inline-block;
@@ -2580,6 +2585,8 @@ export default function ExaminerDashboard() {
   const [reportSearch, setReportSearch] = useState("");
   const [reportStatus, setReportStatus] = useState("ALL");
   const [expandedReportCandidates, setExpandedReportCandidates] = useState({});
+  const [shareReportCandidate, setShareReportCandidate] = useState(null);
+  const [shareReportWorking, setShareReportWorking] = useState(false);
   const [reduceTimeInput, setReduceTimeInput] = useState("");
   const [reduceTimeSaving, setReduceTimeSaving] = useState(false);
   const extendTimeMenuRef = useRef(null);
@@ -2829,6 +2836,26 @@ export default function ExaminerDashboard() {
     [headers],
   );
 
+  const openReportViolationEvidence = useCallback(async (violation, candidateRow) => {
+    const violationId = violation?.violationid ?? violation?.violation_id;
+    if (!violationId) {
+      setActionMsg("Image proof is unavailable because this report item has no violation ID.");
+      window.setTimeout(() => setActionMsg(""), 4500);
+      return;
+    }
+    setEvidenceModalOpen(true);
+    setEvidenceLoading(true);
+    setEvidenceError("");
+    setSelectedEvidence({ ...violation, detail: violation?.type || violation?.detail || "Monitoring violation", candidate_name: candidateRow?.candidatename });
+    try {
+      const response = await axios.get(`${API}/api/violations/${violationId}/evidence`, { headers });
+      setSelectedEvidence({ ...violation, candidate_name: candidateRow?.candidatename, ...(response.data || {}) });
+    } catch (error) {
+      setEvidenceError(error?.response?.data?.detail || error?.message || "Image proof could not be loaded.");
+    } finally {
+      setEvidenceLoading(false);
+    }
+  }, [headers]);
   const loadReentryRequests = useCallback(
     async (examIdArg) => {
       const examId = examIdArg ?? selectedExamId;
@@ -3196,6 +3223,19 @@ export default function ExaminerDashboard() {
       setReportLoading(false);
     }
   }, [headers]);
+  const shareIndividualReport = useCallback(async () => {
+    if (!shareReportCandidate?.assessmentid || !reportData?.exam?.examid) return;
+    setShareReportWorking(true);
+    try {
+      const response = await axios.post(`${API}/api/exams/${reportData.exam.examid}/assessments/${shareReportCandidate.assessmentid}/share-report`, {}, { headers });
+      setActionMsg(response.data?.message || "Report shared securely with the candidate");
+      setShareReportCandidate(null);
+      window.setTimeout(() => setActionMsg(""), 4000);
+    } catch (error) {
+      setActionMsg(error?.response?.data?.detail || error?.message || "Report sharing failed");
+      window.setTimeout(() => setActionMsg(""), 5000);
+    } finally { setShareReportWorking(false); }
+  }, [shareReportCandidate, reportData, headers]);
   const openMonitor = async (exam) => {
     const normalized = normalizeExam(exam);
     setSelectedExam(normalized);
@@ -3706,7 +3746,7 @@ export default function ExaminerDashboard() {
       ["Assessment window", `${formatReportDateTime(summary.started_at)} → ${formatReportDateTime(summary.ended_at)}`, t.info],
     ];
     return (
-      <div style={{ minHeight: "100vh", background: t.canvas, backgroundImage: t.canvasTint, color: t.textPrimary, fontFamily: "'Inter', sans-serif" }}>
+      <div style={{ height: "100vh", maxHeight: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", background: t.canvas, backgroundImage: t.canvasTint, color: t.textPrimary, fontFamily: "'Inter', sans-serif" }}>
         <GlobalStyles theme={theme} />
         <header style={{ minHeight: 68, padding: "0 24px", display: "flex", alignItems: "center", gap: 14, borderBottom: `1px solid ${t.border}`, background: t.surface, position: "sticky", top: 0, zIndex: 30, backdropFilter: "blur(24px)" }}>
           <GhostButton theme={theme} onClick={() => { setView("list"); setReportData(null); setSelectedExam(null); }}>Back</GhostButton>
@@ -3716,10 +3756,11 @@ export default function ExaminerDashboard() {
           </div>
           <GhostButton theme={theme} disabled={reportLoading || !reportData} onClick={() => exportCumulativeReportCsv(reportData)}>Download CSV</GhostButton>
           <GradientButton theme={theme} disabled={reportLoading || !reportData} onClick={() => exportCumulativeReportExcel(reportData)} gradient={t.successGradient} glow={t.glowSuccess} style={{ padding: "9px 14px" }}>Download Excel</GradientButton>
+          {actionMsg ? <span style={{ color: t.success, fontSize: 11.5, fontWeight: 800 }}>{actionMsg}</span> : null}
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <GhostButton theme={theme} disabled={reportLoading} onClick={() => openCumulativeReport(reportData?.exam || selectedExam)}>Refresh</GhostButton>
         </header>
-        <main style={{ maxWidth: 1500, margin: "0 auto", padding: "24px" }}>
+        <main className="cumulative-report-scroll" style={{ width: "100%", maxWidth: 1500, flex: 1, minHeight: 0, margin: "0 auto", padding: "24px", boxSizing: "border-box", overflowY: "scroll", overflowX: "hidden", scrollbarGutter: "stable" }}>
           {reportLoading ? <div style={{ padding: 70, textAlign: "center", color: t.textMuted }}>Loading cumulative report...</div> : reportError ? <div style={{ padding: 18, borderRadius: 14, background: t.dangerBg, border: `1px solid ${t.danger}55`, color: t.danger }}>{reportError}</div> : (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 20 }}>
@@ -3737,8 +3778,8 @@ export default function ExaminerDashboard() {
                   <tbody>{filteredRows.length === 0 ? <tr><td colSpan="8" style={{ padding: 40, textAlign: "center", color: t.textMuted }}>No candidates match this report filter.</td></tr> : filteredRows.map((row) => {
                     const expanded = Boolean(expandedReportCandidates[row.assessmentid]);
                     return <React.Fragment key={row.assessmentid || row.candidateid}>
-                      <tr><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><div style={{ fontWeight: 800 }}>{row.candidatename}</div><div style={{ marginTop: 3, color: t.textMuted, fontSize: 10.5 }}>{row.candidateid}{row.candidateemail ? ` · ${row.candidateemail}` : ""}</div></td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{formatReportDateTime(row.starttime)}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{row.endtime ? formatReportDateTime(row.endtime) : "In progress"}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{formatReportDuration(row.starttime, row.endtime)}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><span style={{ color: statusColor(row.status, t), fontWeight: 800, fontSize: 11 }}>{formatStatus(row.status)}</span></td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, color: row.credibilityscore >= 70 ? t.success : row.credibilityscore >= 40 ? t.warning : t.danger, fontWeight: 900 }}>{row.credibilityscore}%</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, color: row.violationcount ? t.danger : t.textMuted, fontWeight: 900 }}>{row.violationcount}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><button type="button" onClick={() => setExpandedReportCandidates((current) => ({ ...current, [row.assessmentid]: !current[row.assessmentid] }))} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textSecondary, cursor: "pointer", fontWeight: 700 }}>{expanded ? "Hide" : "View"}</button></td></tr>
-                      {expanded ? <tr><td colSpan="8" style={{ padding: "0 14px 16px", borderBottom: `1px solid ${t.border}` }}><div style={{ padding: 14, borderRadius: 12, background: t.surfaceGlass }}>{row.violations.length === 0 ? <div style={{ color: t.textMuted, fontSize: 12 }}>No confirmed violations recorded.</div> : <div style={{ display: "grid", gap: 8 }}>{row.violations.map((violation, index) => <div key={violation.violationid || `${row.assessmentid}-${index}`} style={{ display: "grid", gridTemplateColumns: "180px minmax(180px, .8fr) 1fr", gap: 12, padding: 10, borderRadius: 10, background: t.cardSurface, border: `1px solid ${t.danger}33` }}><span style={{ color: t.textMuted, fontSize: 11 }}>{formatReportDateTime(violation.timestamp)}</span><span style={{ color: t.danger, fontSize: 11.5, fontWeight: 800, textTransform: "capitalize" }}>{String(violation.type || violation.detail || "Violation").replaceAll("_", " ")}</span><span style={{ color: t.textSecondary, fontSize: 11.5 }}>{violation.message || violation.detail || "Violation recorded"}</span></div>)}</div>}</div></td></tr> : null}
+                      <tr><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><div style={{ fontWeight: 800 }}>{row.candidatename}</div><div style={{ marginTop: 3, color: t.textMuted, fontSize: 10.5 }}>{row.candidateid}{row.candidateemail ? ` · ${row.candidateemail}` : ""}</div></td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{formatReportDateTime(row.starttime)}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{row.endtime ? formatReportDateTime(row.endtime) : "In progress"}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, fontSize: 12 }}>{formatReportDuration(row.starttime, row.endtime)}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><span style={{ color: statusColor(row.status, t), fontWeight: 800, fontSize: 11 }}>{formatStatus(row.status)}</span></td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, color: row.credibilityscore >= 70 ? t.success : row.credibilityscore >= 40 ? t.warning : t.danger, fontWeight: 900 }}>{row.credibilityscore}%</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}`, color: row.violationcount ? t.danger : t.textMuted, fontWeight: 900 }}>{row.violationcount}</td><td style={{ padding: 14, borderBottom: `1px solid ${t.border}` }}><div style={{ display: "flex", gap: 7 }}><button type="button" onClick={() => setExpandedReportCandidates((current) => ({ ...current, [row.assessmentid]: !current[row.assessmentid] }))} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${t.border}`, background: t.surfaceGlass, color: t.textSecondary, cursor: "pointer", fontWeight: 700 }}>{expanded ? "Hide" : "View"}</button><button type="button" onClick={() => setShareReportCandidate(row)} style={{ padding: "7px 10px", borderRadius: 8, border: "none", background: t.accentGradient, color: "#fff", cursor: "pointer", fontWeight: 800 }}>Share</button></div></td></tr>
+                      {expanded ? <tr><td colSpan="8" style={{ padding: "0 14px 16px", borderBottom: `1px solid ${t.border}` }}><div style={{ padding: 14, borderRadius: 12, background: t.surfaceGlass }}>{row.violations.length === 0 ? <div style={{ color: t.textMuted, fontSize: 12 }}>No confirmed violations recorded.</div> : <div style={{ display: "grid", gap: 8 }}>{row.violations.map((violation, index) => <div key={violation.violationid || violation.violation_id || `${row.assessmentid}-${index}`} style={{ display: "grid", gridTemplateColumns: "180px minmax(180px, .8fr) minmax(260px, 1fr) auto", alignItems: "center", gap: 12, padding: 10, borderRadius: 10, background: t.cardSurface, border: `1px solid ${t.danger}33` }}><span style={{ color: t.textMuted, fontSize: 11 }}>{formatReportDateTime(violation.timestamp)}</span><span style={{ color: t.danger, fontSize: 11.5, fontWeight: 800, textTransform: "capitalize" }}>{String(violation.type || violation.detail || "Violation").replaceAll("_", " ")}</span><span style={{ color: t.textSecondary, fontSize: 11.5 }}>{violation.message || violation.detail || "Violation recorded"}</span>{(violation.violationid || violation.violation_id) ? <button type="button" onClick={() => void openReportViolationEvidence(violation, row)} style={{ minHeight: 34, padding: "0 12px", borderRadius: 9, border: `1px solid ${t.danger}66`, background: t.dangerBg, color: t.danger, cursor: "pointer", fontSize: 10.5, fontWeight: 800, whiteSpace: "nowrap" }}>View Image Proof</button> : <span style={{ color: t.textFaint, fontSize: 10.5, whiteSpace: "nowrap" }}>Proof unavailable</span>}</div>)}</div>}</div></td></tr> : null}
                     </React.Fragment>;
                   })}</tbody>
                 </table>
@@ -3746,6 +3787,8 @@ export default function ExaminerDashboard() {
             </>
           )}
         </main>
+        <EvidenceModal open={evidenceModalOpen} theme={theme} evidence={selectedEvidence} loading={evidenceLoading} error={evidenceError} onClose={() => { setEvidenceModalOpen(false); setEvidenceLoading(false); setEvidenceError(""); setSelectedEvidence(null); }} />
+        {shareReportCandidate ? <div style={{ position: "fixed", inset: 0, zIndex: 10020, display: "grid", placeItems: "center", padding: 20, background: t.overlay, backdropFilter: "blur(12px)" }}><div style={{ width: "min(520px,100%)", padding: 26, borderRadius: 20, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: "0 28px 80px rgba(0,0,0,.55)" }}><h3 style={{ margin: 0, color: t.textPrimary }}>Share Individual Assessment Report</h3><p style={{ color: t.textSecondary, lineHeight: 1.6 }}>Share the secured in-app report for <strong>{shareReportCandidate.candidatename}</strong>. The candidate will see start and end time, duration, final status, credibility score, confirmed violations, and violation timings. Examiner-only evidence and internal metadata are excluded.</p><div style={{ padding: 12, borderRadius: 11, background: t.accentSoft, color: t.textSecondary, fontSize: 12 }}>{shareReportCandidate.candidateemail || "Candidate email unavailable"}<br/>Assessment: {reportData?.exam?.name}</div><div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}><GhostButton theme={theme} disabled={shareReportWorking} onClick={() => setShareReportCandidate(null)}>Cancel</GhostButton><GradientButton theme={theme} disabled={shareReportWorking} onClick={shareIndividualReport}>{shareReportWorking ? "Sharing..." : "Share Report"}</GradientButton></div></div></div> : null}
       </div>
     );
   }
