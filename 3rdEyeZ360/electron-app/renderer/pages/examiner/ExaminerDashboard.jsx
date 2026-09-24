@@ -2393,8 +2393,15 @@ function CandidateTile({
   onClick,
   theme,
   unreadCount = 0,
+  category = "OFFLINE",
 }) {
   const t = THEMES[theme];
+  const categoryMeta = {
+    ONLINE: { label: "Online", color: t.success, background: t.successBg },
+    CRITICAL: { label: "Critical", color: t.warning, background: t.warningBg },
+    DISQUALIFIED: { label: "Disqualified", color: t.danger, background: t.dangerBg },
+    OFFLINE: { label: "Offline", color: t.textMuted, background: t.surfaceGlass },
+  }[category] || { label: "Offline", color: t.textMuted, background: t.surfaceGlass };
 
   return (
     <div
@@ -2403,8 +2410,14 @@ function CandidateTile({
         overflow: "visible",
         isolation: "isolate",
         zIndex: unreadCount > 0 ? 20 : 1,
+        borderRadius: 17,
+        boxShadow: category === "CRITICAL" ? `0 0 0 2px ${t.warning}88, ${t.glowWarning}` : category === "DISQUALIFIED" ? `0 0 0 2px ${t.danger}88, ${t.glowDanger}` : "none",
       }}
     >
+      <div style={{ position: "absolute", top: 10, left: 10, zIndex: 40, display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 999, background: categoryMeta.background, color: categoryMeta.color, border: `1px solid ${categoryMeta.color}66`, fontSize: 8.5, fontWeight: 900, letterSpacing: .55, textTransform: "uppercase", pointerEvents: "none", backdropFilter: "blur(10px)" }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryMeta.color, boxShadow: `0 0 7px ${categoryMeta.color}` }} />
+        {categoryMeta.label}
+      </div>
       <CandidateVideoTile
         candidate={c}
         stream={stream}
@@ -2556,6 +2569,7 @@ export default function ExaminerDashboard() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [statusFilter, setStatusFilter] = useState("active");
   const [candidateSearch, setCandidateSearch] = useState("");
+  const [liveCategoryFilter, setLiveCategoryFilter] = useState("ONLINE");
   const [chatOpen, setChatOpen] = useState(false);
   const [unreadPrivateMessages, setUnreadPrivateMessages] = useState({});
 
@@ -3249,6 +3263,7 @@ export default function ExaminerDashboard() {
     setLiveData({});
     setReentryRequests([]);
     setCandidateSearch("");
+    setLiveCategoryFilter("ONLINE");
     setChatOpen(false);
     setUnreadPrivateMessages({});
     setView("monitor");
@@ -4746,16 +4761,37 @@ export default function ExaminerDashboard() {
           )
         : 0;
 
+    const violationLimit = Math.max(1, Number(selectedExam?.violationthreshold ?? 10) || 10);
+    const candidateCategory = (candidate) => {
+      const status = normalizeStatusKey(candidate?.status);
+      const violationCount = Number(candidate?.violationcount ?? 0) || 0;
+      const key = String(candidate?.candidateid || "");
+      const stream = candidateCameraStreams[key];
+      const connectionState = String(candidateCameraStates[key] || "").toLowerCase();
+      const hasLiveVideo = Boolean(stream?.getVideoTracks?.().some((track) => track.readyState === "live"));
+      const isConnected = hasLiveVideo || ["connected", "completed"].includes(connectionState);
+      const isDisqualified = ["LOCKED", "TERMINATED"].includes(status) || Boolean(candidate?.thresholdreached ?? candidate?.threshold_reached) || violationCount >= violationLimit;
+      if (isDisqualified) return "DISQUALIFIED";
+      if (violationCount >= Math.max(1, violationLimit - 2)) return "CRITICAL";
+      if (isConnected) return "ONLINE";
+      return "OFFLINE";
+    };
+    const categoryCounts = candidates.reduce((counts, candidate) => {
+      counts[candidateCategory(candidate)] += 1;
+      return counts;
+    }, { ONLINE: 0, CRITICAL: 0, DISQUALIFIED: 0, OFFLINE: 0 });
+    const liveCategories = [
+      { key: "ONLINE", label: "Online", color: t.success },
+      { key: "CRITICAL", label: "Critical", color: t.warning },
+      { key: "DISQUALIFIED", label: "Disqualified", color: t.danger },
+      { key: "OFFLINE", label: "Offline", color: t.textMuted },
+    ];
     const qq = candidateSearch.trim().toLowerCase();
-    const filteredCandidates = qq
-      ? candidates.filter((c) =>
-          [c.candidatename, c.candidateid, c.status]
-            .filter(Boolean)
-            .map((v) => String(v).toLowerCase())
-            .join(" ")
-            .includes(qq),
-        )
-      : candidates;
+    const filteredCandidates = candidates.filter((candidate) => {
+      if (candidateCategory(candidate) !== liveCategoryFilter) return false;
+      if (!qq) return true;
+      return [candidate.candidatename, candidate.candidateid, candidate.status].filter(Boolean).map((value) => String(value).toLowerCase()).join(" ").includes(qq);
+    });
 
     const selectedCandidateEvents =
       candidateEventTab === "warnings" ? warningEvents : violationEvents;
@@ -5387,6 +5423,12 @@ export default function ExaminerDashboard() {
                     }}
                   />
                 </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                  {liveCategories.map((category) => {
+                    const active = liveCategoryFilter === category.key;
+                    return <button key={category.key} type="button" onClick={() => setLiveCategoryFilter(category.key)} aria-pressed={active} style={{ minHeight: 34, padding: "0 12px", borderRadius: 999, border: `1px solid ${active ? category.color : t.border}`, background: active ? `${category.color}1f` : t.surfaceGlass, color: active ? category.color : t.textSecondary, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 7, fontSize: 11, fontWeight: 800, boxShadow: active ? `0 0 0 3px ${category.color}12` : "none" }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: category.color, boxShadow: active ? `0 0 7px ${category.color}` : "none" }} />{category.label}<span style={{ minWidth: 20, height: 20, padding: "0 6px", borderRadius: 999, display: "inline-flex", alignItems: "center", justifyContent: "center", background: active ? `${category.color}22` : t.surfaceGlassHover, color: active ? category.color : t.textMuted, fontSize: 9.5, fontWeight: 900 }}>{categoryCounts[category.key]}</span></button>;
+                  })}
+                </div>
               </div>
 
               <div
@@ -5434,7 +5476,7 @@ export default function ExaminerDashboard() {
                       fontSize: 13.5,
                     }}
                   >
-                    No candidates match your search.
+                    {qq ? `No ${liveCategoryFilter.toLowerCase()} candidates match your search.` : `No candidates are currently classified as ${liveCategoryFilter.toLowerCase()}.`}
                   </div>
                 ) : (
                   filteredCandidates.map((c) => (
@@ -5457,6 +5499,7 @@ export default function ExaminerDashboard() {
                         requestCandidateCamera(c.candidateid, c.assessmentid);
                       }}
                       theme={theme}
+                      category={candidateCategory(c)}
                     />
                   ))
                 )}

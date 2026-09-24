@@ -1841,7 +1841,7 @@ function registerIpcHandlers(mainWindow) {
         timestamp: payload.timestamp,
       });
     }
-  });c
+  });
 
 }
 
