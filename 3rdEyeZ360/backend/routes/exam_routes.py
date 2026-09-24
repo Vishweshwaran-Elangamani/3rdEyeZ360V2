@@ -1343,6 +1343,21 @@ async def share_individual_assessment_report(exam_id: str, assessment_id: str, c
     candidate = await db.users.find_one(_get_user_query(candidate_id))
     if not candidate or candidate.get("role") != "Candidate":
         raise HTTPException(status_code=404, detail="Candidate account not found")
+    existing_share = await db.shared_assessment_reports.find_one({"$and": [
+        {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]},
+        {"$or": [{"assessment_id": assessment_id}, {"assessmentid": assessment_id}]},
+        {"$or": [{"candidate_id": candidate_id}, {"candidateid": candidate_id}]},
+        {"status": "SHARED"},
+    ]}, sort=[("shared_at", 1), ("sharedat", 1)])
+    if existing_share:
+        original_share_id = existing_share.get("share_id") or existing_share.get("shareid")
+        original_shared_at = existing_share.get("shared_at") or existing_share.get("sharedat")
+        await db.assessments.update_one({"_id": assessment["_id"]}, {"$set": {
+            "report_shared": True, "reportshared": True,
+            "report_shared_at": original_shared_at, "reportsharedat": original_shared_at,
+            "report_share_id": original_share_id, "reportshareid": original_share_id,
+        }})
+        return {"message": "Report was already shared with the candidate", "share_id": original_share_id, "shared_at": original_shared_at, "already_shared": True, "email_sent": False}
     violations = await db.violations.find({"$or": [{"assessment_id": assessment_id}, {"assessmentid": assessment_id}]}).sort([("createdat", 1), ("created_at", 1), ("timestamp", 1)]).to_list(None)
     now = datetime.utcnow()
     share_id = f"SHR-{uuid.uuid4().hex[:8].upper()}"
@@ -1359,6 +1374,12 @@ async def share_individual_assessment_report(exam_id: str, assessment_id: str, c
         "view_count": 0, "viewcount": 0, "last_viewed_at": None, "lastviewedat": None,
     }
     await db.shared_assessment_reports.insert_one(share_doc)
+    await db.assessments.update_one({"_id": assessment["_id"]}, {"$set": {
+        "report_shared": True, "reportshared": True,
+        "report_shared_at": now, "reportsharedat": now,
+        "report_share_id": share_id, "reportshareid": share_id,
+        "updated_at": now, "updatedat": now,
+    }})
     await log_audit(actor_id, "ShareAssessmentReport", "Shared individual assessment report in-app", exam_id, assessment_id, f"share_id={share_id}; channel=IN_APP", candidate_id, {"share_id": share_id, "channel": "IN_APP", "status": "SUCCESS"})
     # Reuse the existing candidate-targeted assessment socket channel. This lets
     # an already-open Candidate Dashboard refresh immediately after sharing.
@@ -1382,7 +1403,7 @@ async def share_individual_assessment_report(exam_id: str, assessment_id: str, c
             email_sent = True
         except Exception:
             logger.exception("Shared report notification email failed for %s", candidate_id)
-    return {"message": "Report shared securely with the candidate", "share_id": share_id, "shared_at": now, "email_sent": email_sent}
+    return {"message": "Report shared securely with the candidate", "share_id": share_id, "shared_at": now, "already_shared": False, "email_sent": email_sent}
 
 @router.get("/candidate/shared-reports")
 async def get_candidate_shared_reports(current_user=Depends(require_role("Candidate"))):
@@ -1426,6 +1447,12 @@ async def get_exam_cumulative_report(
     exam = await _ensure_exam_access(db, exam_id, current_user)
     assessment_query = {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]}
     assessments = await db.assessments.find(assessment_query).to_list(None)
+    shared_reports = await db.shared_assessment_reports.find({"$and": [assessment_query, {"status": "SHARED"}]}).sort([("shared_at", 1), ("sharedat", 1)]).to_list(None)
+    shares_by_assessment = {}
+    for shared_report in shared_reports:
+        shared_assessment_id = str(shared_report.get("assessment_id") or shared_report.get("assessmentid") or "")
+        if shared_assessment_id and shared_assessment_id not in shares_by_assessment:
+            shares_by_assessment[shared_assessment_id] = shared_report
 
     candidate_ids = list({
         str(item.get("candidate_id") or item.get("candidateid") or "").strip()
@@ -1516,6 +1543,10 @@ async def get_exam_cumulative_report(
             )
             or 0
         )
+        existing_share = shares_by_assessment.get(assessment_id, {})
+        report_shared_at = assessment.get("report_shared_at") or assessment.get("reportsharedat") or existing_share.get("shared_at") or existing_share.get("sharedat")
+        report_share_id = assessment.get("report_share_id") or assessment.get("reportshareid") or existing_share.get("share_id") or existing_share.get("shareid")
+        report_shared = bool(assessment.get("report_shared") or assessment.get("reportshared") or report_share_id)
         candidate_rows.append({
             "assessmentid": assessment_id,
             "assessment_id": assessment_id,
@@ -1534,6 +1565,12 @@ async def get_exam_cumulative_report(
             "credibility_score": credibility_score,
             "violationcount": confirmed_count,
             "violation_count": confirmed_count,
+            "report_shared": report_shared,
+            "reportshared": report_shared,
+            "report_shared_at": report_shared_at,
+            "reportsharedat": report_shared_at,
+            "report_share_id": report_share_id,
+            "reportshareid": report_share_id,
             "violations": normalized_violations,
         })
 
