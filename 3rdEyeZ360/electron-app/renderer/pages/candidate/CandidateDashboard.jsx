@@ -2015,6 +2015,7 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [dashboardSection, setDashboardSection] = useState("ASSESSMENTS");
   const [sharedReports, setSharedReports] = useState([]);
   const [sharedReportsLoading, setSharedReportsLoading] = useState(false);
   const [selectedSharedReport, setSelectedSharedReport] = useState(null);
@@ -3098,7 +3099,17 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
             />
           </div>
 
-          <div style={{ marginBottom: 28 }}><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}><div><h3 style={{ margin: 0, color: t.textPrimary, fontSize: 19, fontFamily: "'Space Grotesk', sans-serif" }}>Shared Assessment Reports</h3><p style={{ margin: "4px 0 0", color: t.textMuted, fontSize: 12.5 }}>Reports securely shared by your examiner.</p></div><span style={{ padding: "4px 10px", borderRadius: 999, background: t.accentSoft, color: t.accent, fontWeight: 800, fontSize: 11 }}>{sharedReports.length}</span></div>{sharedReportsLoading ? <div style={{ color: t.textMuted, padding: 18 }}>Loading shared reports...</div> : sharedReports.length === 0 ? <div style={{ padding: 18, borderRadius: 14, border: `1px dashed ${t.borderStrong}`, color: t.textMuted }}>No reports have been shared with you yet.</div> : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>{sharedReports.map((report) => { const snapshot=report.snapshot||{}; return <div key={report.share_id} style={{ padding: 18, borderRadius: 16, background: t.cardSurface, border: `1px solid ${t.border}` }}><div style={{ color: t.textPrimary, fontWeight: 800 }}>{snapshot.assessment_name || "Assessment Report"}</div><div style={{ marginTop: 6, color: t.textMuted, fontSize: 11.5 }}>Shared {report.shared_at ? new Date(report.shared_at).toLocaleString() : "recently"}</div><div style={{ display: "flex", gap: 8, marginTop: 12, color: t.textSecondary, fontSize: 12 }}><span>{snapshot.credibility_score ?? 0}% credibility</span><span>•</span><span>{snapshot.violation_count ?? 0} violations</span></div><button type="button" onClick={() => openSharedReport(report.share_id)} style={{ width: "100%", marginTop: 14, minHeight: 40, border: "none", borderRadius: 10, background: t.accentGradient, color: "#fff", fontWeight: 800, cursor: "pointer" }}>View Report</button></div>; })}</div>}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 24, padding: 6, borderRadius: 18, background: t.cardSurface, border: `1px solid ${t.border}` }}>
+            {[
+              { key: "ASSESSMENTS", label: "Your Assessments", count: allottedCount, description: "View and manage assessment access" },
+              { key: "REPORTS", label: "Shared Assessment Reports", count: sharedReports.length, description: "Open reports shared by your examiner" },
+            ].map((section) => {
+              const active = dashboardSection === section.key;
+              return <button key={section.key} type="button" onClick={() => setDashboardSection(section.key)} aria-pressed={active} style={{ minHeight: 78, padding: "14px 16px", borderRadius: 13, border: `1px solid ${active ? t.borderAccent : "transparent"}`, background: active ? t.accentGradientSoft : "transparent", color: active ? t.textPrimary : t.textSecondary, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", textAlign: "left" }}><span style={{ minWidth: 0 }}><span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: "'Space Grotesk', sans-serif" }}><span style={{ fontSize: 20, lineHeight: 1.2, fontWeight: 700, letterSpacing: -0.4 }}>{section.label}</span><span style={{ minWidth: 30, height: 26, padding: "0 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, background: active ? t.accentGradient : t.surfaceGlass, color: active ? "#fff" : t.textMuted, fontSize: 11, fontWeight: 900 }}>{section.count}</span></span><span style={{ display: "block", marginTop: 5, color: t.textMuted, fontSize: 12.5, lineHeight: 1.4 }}>{section.description}</span></span></button>;
+            })}
+          </div>
+          <div style={{ display: dashboardSection === "REPORTS" ? "block" : "none", marginBottom: 28 }}><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}><div><h3 style={{ margin: 0, color: t.textPrimary, fontSize: 20, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.4 }}>Shared Assessment Reports</h3><p style={{ margin: "4px 0 0", color: t.textMuted, fontSize: 12.5 }}>Reports securely shared by your examiner.</p></div></div>{sharedReportsLoading ? <div style={{ color: t.textMuted, padding: 18 }}>Loading shared reports...</div> : sharedReports.length === 0 ? <div style={{ padding: 18, borderRadius: 14, border: `1px dashed ${t.borderStrong}`, color: t.textMuted }}>No reports have been shared with you yet.</div> : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>{sharedReports.map((report) => { const snapshot=report.snapshot||{}; return <div key={report.share_id} style={{ padding: 18, borderRadius: 16, background: t.cardSurface, border: `1px solid ${t.border}` }}><div style={{ color: t.textPrimary, fontWeight: 800 }}>{snapshot.assessment_name || "Assessment Report"}</div><div style={{ marginTop: 6, color: t.textMuted, fontSize: 11.5 }}>Shared {report.shared_at ? new Date(report.shared_at).toLocaleString() : "recently"}</div><div style={{ display: "flex", gap: 8, marginTop: 12, color: t.textSecondary, fontSize: 12 }}><span>{snapshot.credibility_score ?? 0}% credibility</span><span>•</span><span>{snapshot.violation_count ?? 0} violations</span></div><button type="button" onClick={() => openSharedReport(report.share_id)} style={{ width: "100%", marginTop: 14, minHeight: 40, border: "none", borderRadius: 10, background: t.accentGradient, color: "#fff", fontWeight: 800, cursor: "pointer" }}>View Report</button></div>; })}</div>}</div>
+          <div style={{ display: dashboardSection === "ASSESSMENTS" ? "block" : "none" }}>
           <div
             style={{
               display: "flex",
@@ -3124,22 +3135,7 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
                 }}
               >
                 Your Assessments
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: t.textMuted,
-                    fontWeight: 600,
-                    padding: "3px 10px",
-                    borderRadius: 999,
-                    background: t.surfaceGlass,
-                    border: `1px solid ${t.border}`,
-                    fontFamily: "'Inter', sans-serif",
-                    letterSpacing: 0.2,
-                  }}
-                >
-                  {filteredAssessments.length}
-                  {filteredAssessments.length !== allottedCount ? ` of ${allottedCount}` : ""}
-                </span>
+            
               </h3>
               <p style={{ fontSize: 12.5, color: t.textMuted, margin: "4px 0 0", letterSpacing: 0.2 }}>
                 Live updates are pushed instantly. Press refresh only if you need to recover after a connection issue.
@@ -3288,6 +3284,7 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
               ))}
             </div>
           )}
+          </div>
         </div>
       </div>
 
