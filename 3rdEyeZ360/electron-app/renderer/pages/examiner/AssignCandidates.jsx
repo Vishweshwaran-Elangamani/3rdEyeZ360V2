@@ -1102,6 +1102,60 @@ export default function AssignCandidates({ exam, onBack }) {
             transform 0.2s ease,
             opacity 0.2s ease;
         }
+        .theme-round-checkbox {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 18px !important;
+          height: 18px !important;
+          min-width: 18px !important;
+          min-height: 18px !important;
+          max-width: 18px !important;
+          max-height: 18px !important;
+          aspect-ratio: 1 / 1;
+          flex: 0 0 18px;
+          box-sizing: border-box;
+          margin: 0;
+          padding: 0;
+          border-radius: 50%;
+          border: 1.5px solid ${t.borderStrong};
+          background: ${t.inputBg};
+          display: inline-grid;
+          place-content: center;
+          cursor: pointer;
+          box-shadow: inset 0 1px 2px rgba(0,0,0,0.16);
+        }
+        .theme-round-checkbox::before {
+          content: "";
+          width: 7px;
+          height: 4px;
+          border-left: 2px solid #fff;
+          border-bottom: 2px solid #fff;
+          transform: rotate(-45deg) scale(0);
+          transition: transform 0.16s ease;
+          margin-top: -1px;
+        }
+        .theme-round-checkbox:hover:not(:disabled),
+        .theme-round-checkbox:focus-visible {
+          outline: none;
+          border-color: ${t.accent};
+          box-shadow: 0 0 0 3px ${t.accentSoft};
+        }
+        .theme-round-checkbox:checked {
+          border-color: transparent;
+          background: ${t.accentGradient};
+          box-shadow: 0 4px 12px ${t.accent}55;
+        }
+        .theme-round-checkbox:checked::before {
+          transform: rotate(-45deg) scale(1);
+        }
+        .theme-round-checkbox.remove-checkbox:checked {
+          background: ${t.dangerGradient};
+          box-shadow: 0 4px 12px ${t.danger}44;
+        }
+        .theme-round-checkbox:disabled {
+          cursor: not-allowed;
+          opacity: 0.42;
+        }
       `}</style>
 
       <div
@@ -1429,6 +1483,7 @@ export default function AssignCandidates({ exam, onBack }) {
             >
               <input
                 type="checkbox"
+                className={`theme-round-checkbox ${selectionMode === "REMOVE" ? "remove-checkbox" : ""}`}
                 checked={allDynamicVisibleSelected}
                 disabled={
                   dynamicVisibleIds.length === 0 ||
@@ -1619,6 +1674,7 @@ export default function AssignCandidates({ exam, onBack }) {
                   >
                     <input
                       type="checkbox"
+                      className={`theme-round-checkbox ${isAssigned ? "remove-checkbox" : ""}`}
                       checked={
                         isAssigned
                           ? selectedRemovalIds.some(

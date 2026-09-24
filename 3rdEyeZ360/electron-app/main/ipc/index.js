@@ -1,4 +1,6 @@
-﻿const { ipcMain, BrowserWindow, powerMonitor } = require("electron");
+﻿const { ipcMain, BrowserWindow, powerMonitor, app } = require("electron");
+const fs = require("fs");
+const path = require("path");
 const { setupLockdown, removeLockdown } = require("../lockdown/window");
 const {
   createBrowserView,
@@ -198,14 +200,118 @@ function closeMonitoringToastWindow() {
 function positionMonitoringToastWindow(mainWindow) {
   if (!isWindowAlive(mainWindow) || !monitoringToastWindow || monitoringToastWindow.isDestroyed()) return;
   const parentBounds = mainWindow.getBounds();
-  const width = Math.min(540, Math.max(420, parentBounds.width - 80));
-  const height = 190;
+  const width = Math.min(680, Math.max(500, parentBounds.width - 80));
+  const height = 238;
   monitoringToastWindow.setBounds({
     x: Math.round(parentBounds.x + (parentBounds.width - width) / 2),
     y: Math.round(parentBounds.y + 72),
     width,
     height,
   }, false);
+}
+
+const VIOLATION_AVATAR_ALIASES = {
+  // Face and camera warnings
+  face_missing: ["Look_at_screen", "look_at_screen", "violation_warning"],
+  camera_unavailable: ["Look_at_screen", "look_at_screen", "violation_warning"],
+  multiple_faces: ["another_person_warning", "violation_warning"],
+
+  // Head-pose warnings
+  looking_left: ["left_side", "violation_warning"],
+  head_looking_left: ["left_side", "violation_warning"],
+  looking_right: ["right_side", "violation_warning"],
+  head_looking_right: ["right_side", "violation_warning"],
+  looking_down: ["Look_at_screen", "look_at_screen", "violation_warning"],
+  head_looking_down: ["Look_at_screen", "look_at_screen", "violation_warning"],
+
+  // Eye and sleeping warnings
+  eyes_closed: ["sleep", "violation_warning"],
+  eye_gaze_left: ["left_eye_look", "violation_warning"],
+  eye_gaze_right: ["right_eye_look", "violation_warning"],
+  eye_gaze_down: ["Look_at_screen", "look_at_screen", "violation_warning"],
+
+  // Device warnings
+  phone_detected: ["mobile_detected_toast", "violation_warning"],
+
+  // Audio warnings
+  background_speech: ["audio_Warning", "audio_warning", "violation_warning"],
+  high_noise: ["audio_Warning", "audio_warning", "violation_warning"],
+  mic_silent: ["audio_Warning", "audio_warning", "violation_warning"],
+
+  // Power warnings
+  charger_disconnected: ["charger", "violation_warning"],
+  charger_connected: ["charger", "violation_warning"],
+  battery_low: ["charger", "violation_warning"],
+
+  // Final and fallback warnings
+  removal: ["violation_warning"],
+  default: ["violation_warning"],
+};
+
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+let violationAvatarIndex = null;
+
+function normaliseAssetName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function collectImageFiles(directory, output, depth = 0) {
+  if (!directory || depth > 5 || !fs.existsSync(directory)) return;
+  let entries = [];
+  try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch (_) { return; }
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) collectImageFiles(fullPath, output, depth + 1);
+    else if (IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      const key = normaliseAssetName(entry.name);
+      if (key && !output.has(key)) output.set(key, fullPath);
+    }
+  }
+}
+
+function getViolationAvatarIndex() {
+  if (violationAvatarIndex) return violationAvatarIndex;
+  const index = new Map();
+  const roots = [
+    path.resolve(__dirname, "../../assets"),
+    path.resolve(__dirname, "../../renderer/assets"),
+    path.resolve(app.getAppPath(), "assets"),
+    path.resolve(app.getAppPath(), "electron-app/assets"),
+    path.resolve(process.resourcesPath || app.getAppPath(), "assets"),
+  ];
+  for (const root of Array.from(new Set(roots))) collectImageFiles(root, index);
+  violationAvatarIndex = index;
+  console.log("[NATIVE TOAST] violation avatar images indexed", index.size);
+  return index;
+}
+
+function imageFileToDataUri(filePath) {
+  if (!filePath) return "";
+  try {
+    const extension = path.extname(filePath).toLowerCase();
+    const mime = extension === ".svg" ? "image/svg+xml" : extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : extension === ".gif" ? "image/gif" : extension === ".webp" ? "image/webp" : "image/png";
+    return `data:${mime};base64,${fs.readFileSync(filePath).toString("base64")}`;
+  } catch (error) {
+    console.log("[NATIVE TOAST] unable to load violation avatar", filePath, error.message);
+    return "";
+  }
+}
+
+function getViolationAvatarDataUri(detail, options = {}) {
+  const index = getViolationAvatarIndex();
+  const normalizedDetail = normaliseAssetName(detail);
+  const keys = options.isRemoval
+    ? [...(VIOLATION_AVATAR_ALIASES.removal || []), normalizedDetail]
+    : [normalizedDetail, ...(VIOLATION_AVATAR_ALIASES[normalizedDetail] || [])];
+  keys.push(...VIOLATION_AVATAR_ALIASES.default);
+  for (const candidate of keys.map(normaliseAssetName)) {
+    if (index.has(candidate)) return imageFileToDataUri(index.get(candidate));
+  }
+  return "";
 }
 
 function showNativeMonitoringToast(mainWindow, rawPayload) {
@@ -277,6 +383,7 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
   const isRemoval = backendAction === "threshold_reached" || normalizedLevel === "REMOVAL" || (hasLimit && currentCount >= allowedLimit);
   const isFinal = !isRemoval && (backendAction === "final_warning" || normalizedLevel === "FINAL" || (hasLimit && currentCount === Math.max(1, allowedLimit - 1)));
   const isHigh = !isRemoval && !isFinal && (normalizedLevel === "HIGH" || (hasLimit && currentCount >= Math.max(1, allowedLimit - 2)));
+  const avatarDataUri = getViolationAvatarDataUri(detail, { isRemoval });
   const title = isRemoval
     ? "Disqualified from assessment"
     : isFinal
@@ -369,42 +476,112 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
 
       .toast {
         width: 100%;
-        min-height: 145px;
-        border-radius: 16px;
-        padding: 18px 20px;
+        min-height: 205px;
+        border-radius: 24px;
+        padding: 20px 24px 18px 20px;
         color: white;
         background: ${background};
         box-shadow: 0 30px 90px rgba(0, 0, 0, .62);
         border: 1px solid rgba(255, 255, 255, .28);
         display: flex;
-        gap: 14px;
-        align-items: flex-start;
+        gap: 20px;
+        align-items: center;
+        position: relative;
+        overflow: hidden;
+        isolation: isolate;
         animation: alertIn .32s cubic-bezier(.2,.8,.2,1);
       }
+      .toast::before {
+        content: "";
+        position: absolute;
+        width: 210px;
+        height: 210px;
+        left: -68px;
+        bottom: -96px;
+        border-radius: 50%;
+        background: rgba(255,255,255,.08);
+        z-index: -1;
+      }
+      .toast::after {
+        content: "";
+        position: absolute;
+        width: 140px;
+        height: 140px;
+        right: -55px;
+        top: -76px;
+        border-radius: 50%;
+        background: rgba(255,255,255,.06);
+        z-index: -1;
+      }
 
-      .icon {
+      .avatar-shell {
+        width: 132px;
+        height: 166px;
+        border-radius: 28px;
+        background: rgba(255, 255, 255, .14);
+        border: 1px solid rgba(255, 255, 255, .25);
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        flex: 0 0 132px;
+        overflow: hidden;
+        position: relative;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 14px 30px rgba(0,0,0,.20);
+      }
+      .avatar {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center bottom;
+        display: block;
+      }
+      .icon-fallback {
         width: 42px;
         height: 42px;
+        margin: auto;
         border-radius: 50%;
         background: rgba(255, 255, 255, .18);
         display: flex;
         align-items: center;
         justify-content: center;
-        flex: 0 0 auto;
         font-size: 23px;
         font-weight: 900;
       }
+      .content { min-width: 0; flex: 1; position: relative; z-index: 1; }
+      .warning-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin-bottom: 7px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        color: #fff7dc;
+        background: rgba(255,255,255,.13);
+        border: 1px solid rgba(255,255,255,.20);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: .13em;
+        text-transform: uppercase;
+      }
+      .warning-badge-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #ffe082;
+        box-shadow: 0 0 0 4px rgba(255,224,130,.14);
+        animation: badgePulse 1.4s ease-in-out infinite;
+      }
 
       .title {
-        font-size: 14px;
+        font-size: 17px;
         font-weight: 900;
-        letter-spacing: .08em;
+        letter-spacing: .055em;
         text-transform: uppercase;
         margin-bottom: 8px;
       }
 
       .message {
-        font-size: 15px;
+        font-size: 15.5px;
         line-height: 1.42;
         font-weight: 760;
         word-break: break-word;
@@ -442,13 +619,19 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
       @keyframes alertIn { from { opacity: 0; transform: translateY(-28px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
       @keyframes alertOut { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(-28px) scale(.97); } }
       @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+      @keyframes badgePulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.82); } }
     </style>
   </head>
   <body>
     <div class="wrap">
       <div class="toast">
-        <div class="icon">!</div>
-        <div>
+        <div class="avatar-shell">
+          ${avatarDataUri
+            ? `<img class="avatar" src="${avatarDataUri}" alt="" />`
+            : `<div class="icon-fallback">!</div>`}
+        </div>
+        <div class="content">
+          <div class="warning-badge"><span class="warning-badge-dot"></span>Live proctoring alert</div>
           <div class="title">${escapeHtml(title)}</div>
           <div class="message">${escapeHtml(message)}</div>
           ${
@@ -1658,7 +1841,7 @@ function registerIpcHandlers(mainWindow) {
         timestamp: payload.timestamp,
       });
     }
-  });
+  });c
 
 }
 
