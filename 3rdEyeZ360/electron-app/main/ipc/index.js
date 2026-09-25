@@ -44,6 +44,23 @@ function isWindowAlive(win) {
   );
 }
 
+
+function enforceTestingWindowMode(win) {
+  if (ACTIVE_EXAM_FULLSCREEN_ENABLED || !isWindowAlive(win)) return false;
+  win.__examWindowMode = false;
+  removeLockdown(win);
+  if (win.isKiosk()) win.setKiosk(false);
+  if (win.isFullScreen()) win.setFullScreen(false);
+  win.setAlwaysOnTop(false);
+  win.setClosable(true);
+  win.setMinimizable(true);
+  win.setMaximizable(true);
+  win.setResizable(true);
+  win.setMovable(true);
+  win.setMenuBarVisibility(true);
+  return true;
+}
+
 function safeSend(win, channel, payload) {
   if (!isWindowAlive(win)) return false;
 
@@ -657,18 +674,28 @@ function showNativeMonitoringToast(mainWindow, rawPayload) {
   monitoringToastWindow.webContents.once("did-finish-load", () => {
     if (!monitoringToastWindow || monitoringToastWindow.isDestroyed()) return;
 
+    enforceTestingWindowMode(mainWindow);
     positionMonitoringToastWindow(mainWindow);
     monitoringToastWindow.setAlwaysOnTop(true, "screen-saver", 1);
     monitoringToastWindow.showInactive();
     monitoringToastWindow.moveTop();
 
-    if (isWindowAlive(mainWindow) && mainWindow.__examWindowMode === true) {
+    if (
+      ACTIVE_EXAM_FULLSCREEN_ENABLED &&
+      isWindowAlive(mainWindow) &&
+      mainWindow.__examWindowMode === true
+    ) {
       if (!mainWindow.isKiosk()) mainWindow.setKiosk(true);
       if (!mainWindow.isFullScreen()) mainWindow.setFullScreen(true);
       mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
       mainWindow.focus();
       mainWindow.moveTop();
       monitoringToastWindow.moveTop();
+    } else if (isWindowAlive(mainWindow)) {
+      enforceTestingWindowMode(mainWindow);
+      setTimeout(() => enforceTestingWindowMode(mainWindow), 0);
+      setTimeout(() => enforceTestingWindowMode(mainWindow), 100);
+      setTimeout(() => enforceTestingWindowMode(mainWindow), 500);
     }
 
     console.log("[NATIVE TOAST] shown", {
@@ -1084,7 +1111,8 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle("enter-exam-window-mode", () => {
     if (!isWindowAlive(mainWindow)) return { success: false, error: "Main window unavailable" };
     try {
-      mainWindow.__examWindowMode = true;
+      // Secured-window enforcement is active only when the central switch is on.
+      mainWindow.__examWindowMode = Boolean(ACTIVE_EXAM_FULLSCREEN_ENABLED);
 
       //FullScreen-LockMode
       // Use a normal maximized window while testing when the common switch is false.
@@ -1221,7 +1249,9 @@ function registerIpcHandlers(mainWindow) {
       return { success: false, error: "Main window unavailable" };
     }
 
+    enforceTestingWindowMode(mainWindow);
     const ok = showBrowser(mainWindow);
+    enforceTestingWindowMode(mainWindow);
     return ok
       ? { success: true }
       : { success: false, error: "WebContentsView unavailable" };
@@ -1243,7 +1273,9 @@ function registerIpcHandlers(mainWindow) {
       return { success: false, error: "Main window unavailable" };
     }
 
+    enforceTestingWindowMode(mainWindow);
     const ok = focusBrowser(mainWindow);
+    enforceTestingWindowMode(mainWindow);
     return ok
       ? { success: true }
       : { success: false, error: "WebContentsView unavailable" };
@@ -1254,7 +1286,9 @@ function registerIpcHandlers(mainWindow) {
       return { success: false, error: "Main window unavailable" };
     }
 
+    enforceTestingWindowMode(mainWindow);
     const ok = restoreBrowser(mainWindow);
+    enforceTestingWindowMode(mainWindow);
     return ok
       ? { success: true }
       : { success: false, error: "WebContentsView unavailable" };
