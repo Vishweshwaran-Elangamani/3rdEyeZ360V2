@@ -1591,6 +1591,30 @@ async def get_exam_cumulative_report(
         "candidates": candidate_rows,
     }
 
+@router.get("/{exam_id}/attendance")
+async def get_exam_attendance(exam_id: str, current_user=Depends(require_role("Examiner", "Admin"))):
+    db = get_db()
+    exam = await _ensure_exam_access(db, exam_id, current_user)
+    query = {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]}
+    assessments = await db.assessments.find(query).to_list(None)
+    candidate_ids = [str(a.get("candidate_id") or a.get("candidateid") or "") for a in assessments]
+    users = await db.users.find({"$or": [{"user_id": {"$in": candidate_ids}}, {"userid": {"$in": candidate_ids}}]}).to_list(None) if candidate_ids else []
+    users_by_id = {str(u.get("user_id") or u.get("userid") or ""): u for u in users}
+    frames = exam.get("timeframes") or exam.get("flexibleintervals") or exam.get("flexible_intervals") or []
+    multi = is_multi_session_exam(exam)
+    count = max(1, len(frames) if multi else 1)
+    sessions = [{"session_number": n, "session_name": f"Session {n}", "timeframe": frames[n-1] if n <= len(frames) else None, "attended_count": 0, "attended_candidates": []} for n in range(1, count + 1)]
+    never = []
+    for a in assessments:
+        cid = str(a.get("candidate_id") or a.get("candidateid") or "")
+        user = users_by_id.get(cid, {})
+        entered_number = int(a.get("enteredexamsession") or a.get("entered_exam_session") or 0)
+        attended = bool(a.get("hasenteredexam", a.get("has_entered_exam", False)) and 1 <= entered_number <= count)
+        row = {"assessment_id": a.get("assessment_id") or a.get("assessmentid"), "candidate_id": cid, "candidate_name": user.get("name") or cid, "candidate_email": user.get("email") or "", "status": _normalize_status(a.get("finalstatus") or a.get("final_status") or a.get("assessmentstatus") or a.get("assessment_status") or a.get("status"), "ASSIGNED"), "attended": attended, "session_number": entered_number if attended else None, "joined_at": a.get("activetime") or a.get("active_time"), "left_at": a.get("exittime") or a.get("exit_time") or a.get("finalizedat") or a.get("finalized_at")}
+        (sessions[entered_number-1]["attended_candidates"] if attended else never).append(row)
+    for session in sessions: session["attended_count"] = len(session["attended_candidates"])
+    return {"exam_id": exam_id, "exam_type": "MULTI_SESSION" if multi else "SINGLE_SESSION", "total_assigned": len(assessments), "total_attended": sum(x["attended_count"] for x in sessions), "never_attended_count": len(never), "sessions": sessions, "never_attended_candidates": never}
+
 @router.get("/{exam_id}/assessments")
 async def get_exam_assessments(
     exam_id: str,

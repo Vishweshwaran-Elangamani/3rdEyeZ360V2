@@ -2541,6 +2541,11 @@ export default function ExaminerDashboard() {
   const t = THEMES[theme];
 
   const [monitorTab, setMonitorTab] = useState("grid");
+  const [attendanceData, setAttendanceData] = useState(null);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [attendanceError, setAttendanceError] = useState("");
+  const [attendanceSession, setAttendanceSession] = useState("SESSION_1");
+  const [attendanceSearch, setAttendanceSearch] = useState("");
   const [reentryRequests, setReentryRequests] = useState([]);
   const { user, accessToken } = useAuthStore();
   const socket = useSocket(accessToken);
@@ -2747,6 +2752,7 @@ export default function ExaminerDashboard() {
     [headers],
   );
 
+  const loadAttendance = useCallback(async (examId) => { if (!examId) return; setAttendanceLoading(true); setAttendanceError(""); try { const response = await axios.get(`${API}/api/exams/${examId}/attendance`, { headers }); setAttendanceData(response.data || null); } catch (error) { setAttendanceError(error?.response?.data?.detail || error?.message || "Attendance could not be loaded."); } finally { setAttendanceLoading(false); } }, [headers]);
   const loadMonitoringEvents = useCallback(
     async (candidateId, examId) => {
       if (!candidateId || !examId) return null;
@@ -2942,6 +2948,7 @@ export default function ExaminerDashboard() {
     loadReentryRequests(selectedExamId);
   }, [view, selectedExamId, loadExamById, loadCandidates, loadReentryRequests]);
 
+  useEffect(() => { if (view !== "monitor" || monitorTab !== "attendance" || !selectedExamId) return undefined; void loadAttendance(selectedExamId); const timer = window.setInterval(() => void loadAttendance(selectedExamId), 5000); return () => window.clearInterval(timer); }, [view, monitorTab, selectedExamId, loadAttendance]);
   useEffect(() => {
     if (!socket) return;
 
@@ -4834,6 +4841,11 @@ export default function ExaminerDashboard() {
     const canPauseSelected = selectedAssessmentStatus === "ACTIVE";
     const canResumeSelected = selectedAssessmentStatus === "PAUSED";
     const canTerminateSelected = Boolean(selectedCandidate) && !selectedAssessmentFinalized;
+    const attendanceSessions = attendanceData?.sessions || [];
+    const selectedAttendanceSession = attendanceSessions.find((item) => `SESSION_${item.session_number}` === attendanceSession) || attendanceSessions[0];
+    const attendanceRows = attendanceSession === "NEVER_ATTENDED" ? (attendanceData?.never_attended_candidates || []) : (selectedAttendanceSession?.attended_candidates || []);
+    const attendanceQuery = attendanceSearch.trim().toLowerCase();
+    const filteredAttendanceRows = attendanceRows.filter((item) => !attendanceQuery || [item.candidate_name,item.candidate_id,item.candidate_email].filter(Boolean).join(" ").toLowerCase().includes(attendanceQuery));
     return (
       <div
         style={{
@@ -5116,6 +5128,7 @@ export default function ExaminerDashboard() {
               </svg>
             }
           />
+          <MonitorTabButton theme={theme} active={monitorTab === "attendance"} label="Attendance" count={attendanceData?.total_assigned ?? candidates.length} onClick={() => setMonitorTab("attendance")} icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><polyline points="16 11 18 13 22 9"/></svg>} />
           <MonitorTabButton
             theme={theme}
             active={monitorTab === "requests"}
@@ -5138,7 +5151,16 @@ export default function ExaminerDashboard() {
           />
         </div>
 
-        {monitorTab === "requests" ? (
+        {monitorTab === "attendance" ? (
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 20 }}>
+            {attendanceLoading && !attendanceData ? <div style={{ padding: 60, textAlign: "center", color: t.textMuted }}>Loading attendance...</div> : attendanceError ? <div style={{ padding: 18, color: t.danger, background: t.dangerBg, borderRadius: 14 }}>{attendanceError}</div> : <div style={{ width: "min(1180px,100%)", display: "grid", gap: 16 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 12 }}>{[["Total Assigned",attendanceData?.total_assigned ?? candidates.length,t.accent],["Attended",attendanceData?.total_attended ?? 0,t.success],["Never Attended",attendanceData?.never_attended_count ?? 0,t.danger]].map(([label,value,color])=><div key={label} style={{ padding:16,borderRadius:15,background:t.cardSurface,border:`1px solid ${t.border}` }}><div style={{ color:t.textMuted,fontSize:9,fontWeight:800,textTransform:"uppercase" }}>{label}</div><div style={{ marginTop:7,color,fontSize:25,fontWeight:900 }}>{value}</div></div>)}</div>
+              <div style={{ display:"flex",gap:8,flexWrap:"wrap" }}>{attendanceSessions.map((session)=>{const key=`SESSION_${session.session_number}`;const active=attendanceSession===key;return <button key={key} onClick={()=>setAttendanceSession(key)} style={{height:38,padding:"0 13px",borderRadius:10,border:`1px solid ${active?t.borderAccent:t.border}`,background:active?t.accentSoft:t.surfaceGlass,color:active?t.accent:t.textSecondary,cursor:"pointer",fontWeight:800}}>Session {session.session_number} · {session.attended_count}</button>})}<button onClick={()=>setAttendanceSession("NEVER_ATTENDED")} style={{height:38,padding:"0 13px",borderRadius:10,border:`1px solid ${attendanceSession==="NEVER_ATTENDED"?t.danger:t.border}`,background:attendanceSession==="NEVER_ATTENDED"?t.dangerBg:t.surfaceGlass,color:attendanceSession==="NEVER_ATTENDED"?t.danger:t.textSecondary,cursor:"pointer",fontWeight:800}}>Never Attended · {attendanceData?.never_attended_count ?? 0}</button></div>
+              <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}><div><h3 style={{margin:0,color:t.textPrimary}}>{attendanceSession==="NEVER_ATTENDED"?"Never Attended":`Session ${selectedAttendanceSession?.session_number||1} Attendance`}</h3><div style={{marginTop:4,color:t.textMuted,fontSize:11.5}}>{attendanceSession==="NEVER_ATTENDED"?"Candidates who did not participate in any session.":"Candidates who attended this session. A candidate can attend only one session."}</div></div><input value={attendanceSearch} onChange={(e)=>setAttendanceSearch(e.target.value)} placeholder="Search candidate, ID or email..." style={{width:310,height:40,padding:"0 12px",borderRadius:10,border:`1px solid ${t.border}`,background:t.inputBg,color:t.textPrimary}}/></div>
+              <div style={{overflowX:"auto",borderRadius:15,border:`1px solid ${t.border}`,background:t.cardSurface}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:760}}><thead><tr>{["Candidate","Candidate ID","Status","Session","Joined At","Left At"].map(label=><th key={label} style={{padding:12,textAlign:"left",color:t.textMuted,borderBottom:`1px solid ${t.border}`}}>{label}</th>)}</tr></thead><tbody>{filteredAttendanceRows.length===0?<tr><td colSpan="6" style={{padding:40,textAlign:"center",color:t.textMuted}}>No candidates in this attendance section.</td></tr>:filteredAttendanceRows.map(item=><tr key={item.assessment_id}><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}><b>{item.candidate_name}</b><div style={{color:t.textMuted,fontSize:10}}>{item.candidate_email}</div></td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.candidate_id}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`,color:item.attended?t.success:t.danger,fontWeight:800}}>{item.attended?"Attended":"Never Attended"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.session_number?`Session ${item.session_number}`:"—"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.joined_at?new Date(item.joined_at).toLocaleString():"—"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.left_at?new Date(item.left_at).toLocaleString():"—"}</td></tr>)}</tbody></table></div>
+            </div>}
+          </div>
+        ) : monitorTab === "requests" ? (
           <div
             style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 20 }}
           >
