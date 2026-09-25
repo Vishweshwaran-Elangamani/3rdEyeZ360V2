@@ -3,6 +3,7 @@ import axios from "axios";
 import useAuthStore from "../store/authStore";
 import useExamStore from "../store/examStore";
 import appIcon from "../../assets/icons/app-icon (2).png";
+import "../styles/Login.css";
 
 const API = "http://localhost:3000";
 
@@ -390,6 +391,7 @@ export default function Login({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [emailError, setEmailError] = useState("");
   const [loading, setLoading] = useState(false);
   const [transitionPhase, setTransitionPhase] = useState("idle");
   const transitionTimers = useRef([]);
@@ -421,12 +423,30 @@ export default function Login({ onLogin }) {
 
     const cleanEmail = email.trim().toLowerCase();
     const cleanPassword = password.trim();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (!cleanEmail || !cleanPassword) {
-      setError("Please enter both your email and password.");
+    if (!cleanEmail) {
+      setEmailError("Please enter your email address.");
+      setError("");
       setLockState(LOCK_STATE.ERROR);
       return;
     }
+
+    if (!emailPattern.test(cleanEmail)) {
+      setEmailError("That doesn't look like a valid email address.");
+      setError("");
+      setLockState(LOCK_STATE.ERROR);
+      return;
+    }
+
+    if (!cleanPassword) {
+      setEmailError("");
+      setError("Please enter your password.");
+      setLockState(LOCK_STATE.ERROR);
+      return;
+    }
+
+    setEmailError("");
 
     setLoading(true);
     setError("");
@@ -526,124 +546,6 @@ export default function Login({ onLogin }) {
             : "none",
       }}
     >
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:ital,wght@0,300;0,400;0,600;0,700;0,800;1,300;1,400;1,600;1,700;1,800&display=swap');
-
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(-4px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes verifiedGlow {
-          0%, 100% { box-shadow: inset 0 0 0 rgba(74,222,128,0); }
-          50% { box-shadow: inset 0 0 110px rgba(74,222,128,0.1); }
-        }
-        @keyframes handoffBackdrop {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @keyframes handoffPanel {
-          from { opacity: 0; transform: translateY(30px) scale(0.9); }
-          to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        @keyframes dashboardMark {
-          0% { opacity: 0; transform: scale(0.55) rotate(-12deg); }
-          75% { opacity: 1; transform: scale(1.08) rotate(2deg); }
-          100% { opacity: 1; transform: scale(1) rotate(0); }
-        }
-        @keyframes handoffBar {
-          from { transform: scaleX(0); }
-          to { transform: scaleX(1); }
-        }
-        @keyframes loginPageExit {
-          from { opacity: 1; transform: scale(1); filter: blur(0); }
-          to { opacity: 0; transform: scale(1.05); filter: blur(9px); }
-        }
-
-        @keyframes drift {
-          0%   { transform: translate(0, 0); }
-          50%  { transform: translate(14px, -18px); }
-          100% { transform: translate(0, 0); }
-        }
-
-        @keyframes softPulse {
-          0%, 100% { opacity: 0.06; }
-          50%      { opacity: 0.14; }
-        }
-
-        @keyframes softGlow {
-          0%, 100% { opacity: 0.35; }
-          50%      { opacity: 0.55; }
-        }
-
-        @keyframes keyEnter {
-          0%   { opacity: 0; transform: translate(60px, 10px) rotate(-8deg); }
-          100% { opacity: 1; transform: translate(0, 0) rotate(0deg); }
-        }
-
-        @keyframes keyFloat {
-          0%, 100% { transform: translate(0, 0) rotate(0deg); }
-          50%      { transform: translate(-3px, -4px) rotate(-3deg); }
-        }
-
-        @keyframes keyInsert {
-          0%   { transform: translate(0, 0) rotate(0deg); }
-          60%  { transform: translate(-38px, -6px) rotate(-4deg); }
-          100% { transform: translate(-46px, -2px) rotate(0deg); }
-        }
-
-        @keyframes shackleOpen {
-          0%   { transform: rotate(0deg) translateY(0); }
-          100% { transform: rotate(-25deg) translateY(-3px); }
-        }
-
-        @keyframes shakeError {
-          0%, 100% { transform: translateX(0); }
-          20%      { transform: translateX(-6px); }
-          40%      { transform: translateX(6px); }
-          60%      { transform: translateX(-4px); }
-          80%      { transform: translateX(4px); }
-        }
-
-        @keyframes xPop {
-          0%   { opacity: 0; transform: scale(0.4); }
-          70%  { opacity: 1; transform: scale(1.15); }
-          100% { opacity: 1; transform: scale(1); }
-        }
-
-        @keyframes checkPop {
-          0%   { stroke-dashoffset: 30; opacity: 0; }
-          40%  { opacity: 1; }
-          100% { stroke-dashoffset: 0; opacity: 1; }
-        }
-
-        @keyframes ringPulse {
-          0%   { transform: scale(0.9); opacity: 0.7; }
-          100% { transform: scale(1.6); opacity: 0; }
-        }
-
-        @keyframes glowBreath {
-          0%, 100% { opacity: 0.5; }
-          50%      { opacity: 0.9; }
-        }
-
-        .login-input::placeholder { color: #4a4f63; }
-
-        .login-btn:hover:not(:disabled) {
-          transform: translateY(-1px);
-          box-shadow: 0 10px 24px rgba(79,142,247,0.35);
-        }
-
-        .login-btn:active:not(:disabled) {
-          transform: translateY(0);
-        }
-
-        @media (max-width: 900px) {
-          .login-branding { display: none !important; }
-          .login-form-panel { width: 100% !important; flex: 1 !important; }
-        }
-      `}</style>
 
       {transitionPhase === "handoff" && (
         <div
@@ -667,7 +569,7 @@ export default function Login({ onLogin }) {
                 <rect x="3" y="3" width="7" height="7" rx="2" /><rect x="14" y="3" width="7" height="7" rx="2" /><rect x="3" y="14" width="7" height="7" rx="2" /><rect x="14" y="14" width="7" height="7" rx="2" />
               </svg>
             </div>
-            <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 20, fontWeight: 600 }}>Opening your dashboard</div>
+            <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 20, fontWeight: 600 }}></div>
             <div style={{ marginTop: 8, color: "#a1abc5", fontSize: 13, lineHeight: 1.5 }}>Credentials verified successfully</div>
             <div style={{ height: 4, marginTop: 25, borderRadius: 999, background: "rgba(255,255,255,0.09)", overflow: "hidden" }}>
               <div style={{ width: "100%", height: "100%", borderRadius: 999, background: "linear-gradient(90deg,#4ade80,#4f8ef7,#7c5ce7)", transformOrigin: "left", animation: "handoffBar 1.2s linear forwards" }} />
@@ -939,36 +841,14 @@ export default function Login({ onLogin }) {
           </div>
 
           {error && (
-            <div
-              role="alert"
-              style={{
-                background: "rgba(247, 95, 95, 0.08)",
-                border: "1px solid rgba(247, 95, 95, 0.35)",
-                borderRadius: 10,
-                padding: "11px 14px",
-                color: "#ff8080",
-                fontSize: 13,
-                marginBottom: 18,
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 10,
-                animation: "fadeIn 0.25s ease",
-                lineHeight: 1.45,
-              }}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                style={{ flexShrink: 0, marginTop: 1 }}
-              >
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="8" x2="12" y2="12" />
-                <line x1="12" y1="16" x2="12.01" y2="16" />
-              </svg>
+            <div role="alert" className="login-alert">
+              <span className="login-alert__icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <circle cx="12" cy="12" r="9" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </span>
               <span>{error}</span>
             </div>
           )}
@@ -976,7 +856,7 @@ export default function Login({ onLogin }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div>
               <label style={labelStyle}>EMAIL ADDRESS</label>
-              <div style={{ position: "relative" }}>
+              <div className={`login-field-control ${emailError ? "login-field-control--error" : ""}`} style={{ position: "relative" }}>
                 <span style={inputIconStyle}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
@@ -986,10 +866,16 @@ export default function Login({ onLogin }) {
                 <input
                   className="login-input"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    if (emailError) setEmailError("");
+                  }}
                   onFocus={() => setFocusedField("email")}
                   onBlur={() => setFocusedField("")}
-                  type="email"
+                  type="text"
+                  inputMode="email"
+                  aria-invalid={Boolean(emailError)}
+                  aria-describedby={emailError ? "login-email-error" : undefined}
                   placeholder="Enter your email"
                   autoComplete="username"
                   disabled={loading}
@@ -999,6 +885,16 @@ export default function Login({ onLogin }) {
                   }}
                 />
               </div>
+              {emailError && (
+                <div id="login-email-error" role="alert" className="login-field-error">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  <span>{emailError}</span>
+                </div>
+              )}
             </div>
 
             <div>
@@ -1063,43 +959,30 @@ export default function Login({ onLogin }) {
             <button
               type="submit"
               disabled={loading}
-              className="login-btn"
-              style={{
-                width: "100%",
-                marginTop: 8,
-                padding: "12px 0",
-                fontSize: 15,
-                fontWeight: 600,
-                color: "#ffffff",
-                background: loading
-                  ? "#3a4159"
-                  : "linear-gradient(135deg, #4f8ef7, #7c5ce7)",
-                border: "none",
-                borderRadius: 10,
-                cursor: loading ? "not-allowed" : "pointer",
-                transition: "all 0.2s ease",
-                boxShadow: loading ? "none" : "0 6px 16px rgba(79,142,247,0.25)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 10,
-                fontFamily: "'Poppins', sans-serif",
-                letterSpacing: 0.3,
-              }}
+              className={`login-btn login-btn--${transitionPhase}`}
             >
-              {loading && (
-                <span
-                  style={{
-                    width: 16,
-                    height: 16,
-                    border: "2px solid rgba(255,255,255,0.35)",
-                    borderTopColor: "#fff",
-                    borderRadius: "50%",
-                    animation: "spin 0.7s linear infinite",
-                  }}
-                />
+              <span className="login-btn__shine" aria-hidden="true" />
+              {loading && <span className="login-btn__spinner" aria-hidden="true" />}
+              <span className="login-btn__label">
+                {transitionPhase === "unlocking"
+                  ? "Access granted"
+                  : transitionPhase === "handoff"
+                  ? "Access granted"
+                  : loading
+                  ? "Signing in..."
+                  : "Sign In"}
+              </span>
+              {!loading && transitionPhase === "idle" && (
+                <svg className="login-btn__arrow" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M5 12h13" />
+                  <path d="m13 6 6 6-6 6" />
+                </svg>
               )}
-              {transitionPhase === "unlocking" ? "Access granted" : transitionPhase === "handoff" ? "Opening dashboard..." : loading ? "Signing in..." : "Sign In"}
+              {transitionPhase === "unlocking" && !loading && (
+                <svg className="login-btn__check" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m5 12 4 4L19 6" />
+                </svg>
+              )}
             </button>
           </div>
 
