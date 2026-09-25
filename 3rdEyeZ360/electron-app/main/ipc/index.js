@@ -2,6 +2,8 @@
 const fs = require("fs");
 const path = require("path");
 const { setupLockdown, removeLockdown } = require("../lockdown/window");
+//FullScreen-LockMode
+const { ACTIVE_EXAM_FULLSCREEN_ENABLED } = require("../fullscreen-config");
 const {
   createBrowserView,
   destroyBrowserView,
@@ -1046,8 +1048,15 @@ function registerIpcHandlers(mainWindow) {
       return { success: false, error: "Main window unavailable" };
     }
 
+    //FullScreen-LockMode
+    // Keep Alt+Tab and normal application switching available when lock mode is disabled.
+    if (!ACTIVE_EXAM_FULLSCREEN_ENABLED) {
+      removeLockdown(mainWindow);
+      return { success: true, lockModeEnabled: false };
+    }
+
     setupLockdown(mainWindow);
-    return { success: true };
+    return { success: true, lockModeEnabled: true };
   });
 
   ipcMain.handle("disable-lockdown", () => {
@@ -1064,7 +1073,11 @@ function registerIpcHandlers(mainWindow) {
       return { success: false, error: "Main window unavailable" };
     }
 
-    mainWindow.setClosable(Boolean(value));
+    //FullScreen-LockMode
+    // In testing mode the window must always remain closable.
+    mainWindow.setClosable(
+      ACTIVE_EXAM_FULLSCREEN_ENABLED ? Boolean(value) : true,
+    );
     return { success: true };
   });
 
@@ -1072,6 +1085,26 @@ function registerIpcHandlers(mainWindow) {
     if (!isWindowAlive(mainWindow)) return { success: false, error: "Main window unavailable" };
     try {
       mainWindow.__examWindowMode = true;
+
+      //FullScreen-LockMode
+      // Use a normal maximized window while testing when the common switch is false.
+      if (!ACTIVE_EXAM_FULLSCREEN_ENABLED) {
+        removeLockdown(mainWindow);
+        mainWindow.setAlwaysOnTop(false);
+        if (mainWindow.isKiosk()) mainWindow.setKiosk(false);
+        if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+        mainWindow.setClosable(true);
+        mainWindow.setMinimizable(true);
+        mainWindow.setMaximizable(true);
+        mainWindow.setResizable(true);
+        mainWindow.setMovable(true);
+        mainWindow.setMenuBarVisibility(true);
+        mainWindow.maximize();
+        mainWindow.show();
+        mainWindow.focus();
+        return { success: true, lockModeEnabled: false };
+      }
+
       mainWindow.setClosable(false);
       mainWindow.setMinimizable(false);
       mainWindow.setMaximizable(false);
@@ -1083,7 +1116,7 @@ function registerIpcHandlers(mainWindow) {
       mainWindow.show();
       mainWindow.focus();
       mainWindow.moveTop();
-      return { success: true };
+      return { success: true, lockModeEnabled: true };
     } catch (error) {
       return { success: false, error: error?.message || "Unable to enter secured exam mode" };
     }
@@ -1846,3 +1879,5 @@ function registerIpcHandlers(mainWindow) {
 }
 
 module.exports = registerIpcHandlers; 
+
+

@@ -18,6 +18,10 @@ let mainWindow = null;
 let pythonProcess = null;
 let rendererReloadTimer = null;
 
+//FullScreen-LockMode
+// The fullscreen/kiosk switch is maintained in one common configuration file.
+const { ACTIVE_EXAM_FULLSCREEN_ENABLED } = require("./fullscreen-config");
+
 function getIconPath() {
   return path.join(
     __dirname,
@@ -137,6 +141,19 @@ function createWindow() {
       mainWindow.__examWindowMode !== true
     ) return;
 
+    //FullScreen-LockMode
+    if (!ACTIVE_EXAM_FULLSCREEN_ENABLED) {
+      if (mainWindow.isKiosk()) mainWindow.setKiosk(false);
+      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.setResizable(true);
+      mainWindow.setMovable(true);
+      mainWindow.setMinimizable(true);
+      mainWindow.setMaximizable(true);
+      mainWindow.show();
+      return;
+    }
+
     if (!mainWindow.isKiosk()) mainWindow.setKiosk(true);
     if (!mainWindow.isFullScreen()) mainWindow.setFullScreen(true);
     mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
@@ -146,12 +163,16 @@ function createWindow() {
   };
 
   mainWindow.on("blur", () => {
+    //FullScreen-LockMode
+    if (!ACTIVE_EXAM_FULLSCREEN_ENABLED) return;
     if (mainWindow.__examWindowMode !== true) return;
     setTimeout(restoreSecuredExamWindow, 0);
     setTimeout(restoreSecuredExamWindow, 100);
   });
 
   mainWindow.on("leave-full-screen", () => {
+    //FullScreen-LockMode
+    if (!ACTIVE_EXAM_FULLSCREEN_ENABLED) return;
     if (mainWindow.__examWindowMode !== true) return;
     setTimeout(restoreSecuredExamWindow, 0);
   });
@@ -253,3 +274,5 @@ app.on("window-all-closed", () => {
 module.exports = {
   getMainWindow: () => mainWindow,
 };
+
+
