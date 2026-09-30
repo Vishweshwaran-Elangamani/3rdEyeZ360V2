@@ -698,7 +698,7 @@ export default function Login({ onLogin }) {
                 letterSpacing: -0.5,
               }}
             >
-              A new standard of
+              A new standard for
               <br />
               <span
                 style={{
@@ -710,7 +710,7 @@ export default function Login({ onLogin }) {
               >
                 Intelligent
               </span>{" "}
-              proctoring
+              assessments & interviews
             </h1>
 
             <p
@@ -723,9 +723,9 @@ export default function Login({ onLogin }) {
                 fontWeight: 400,
               }}
             >
-              We're 3rdEyeZ360 — an AI-powered proctoring platform built on
-              trust. We bring clarity, fairness, and quiet confidence to every
-              assessment you deliver.
+              3rdEyeZ360 is our AI-powered platform for secure exam proctoring
+              and candidate interviews. It brings clarity, fairness, and confidence
+              to every assessment and interview we conduct.
             </p>
 
             <div

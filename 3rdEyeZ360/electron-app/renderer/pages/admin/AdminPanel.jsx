@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import axios from "axios";
 import useAuthStore from "../../store/authStore";
 
@@ -571,7 +571,7 @@ function ViewToggle({ value, onChange, theme }) {
   </div>;
 }
 
-function Pagination({ page, totalItems, pageSize, onPageChange, onPageSizeChange, theme, pageSizeOptions = [25, 50, 100] }) {
+function Pagination({ page, totalItems, pageSize, onPageChange, onPageSizeChange, theme, pageSizeOptions = [25, 50, 100], sticky = false }) {
   const t = THEMES[theme];
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -579,12 +579,60 @@ function Pagination({ page, totalItems, pageSize, onPageChange, onPageSizeChange
   const end = Math.min(safePage * pageSize, totalItems);
   const pageNumbers = Array.from(new Set([1, safePage - 1, safePage, safePage + 1, totalPages])).filter(n => n >= 1 && n <= totalPages).sort((a,b) => a-b);
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "14px 16px", flexWrap: "wrap", borderTop: `1px solid ${t.border}`, background: t.tableHead }}>
+    <div
+      className={sticky ? "admin-sticky-pagination" : undefined}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+        padding: "10px 14px",
+        flexWrap: "wrap",
+        borderTop: `1px solid ${t.border}`,
+        background: sticky ? t.surfaceElevated : t.tableHead,
+        ...(sticky
+          ? {
+              position: "sticky",
+              bottom: -45,
+              zIndex: 24,
+              boxShadow: "0 -10px 28px rgba(0,0,0,0.16)",
+              backdropFilter: "blur(24px)",
+              WebkitBackdropFilter: "blur(24px)",
+            }
+          : {}),
+      }}
+    >
       <div style={{ fontSize: 12, color: t.textMuted }}>Showing <strong style={{ color: t.textPrimary }}>{start}-{end}</strong> of <strong style={{ color: t.textPrimary }}>{totalItems}</strong></div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <label style={{ fontSize: 11.5, color: t.textMuted }}>Rows</label>
-        <select value={pageSize} onChange={e => onPageSizeChange(Number(e.target.value))} style={{ background: t.inputBg, color: t.textPrimary, border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 8px", outline: "none" }}>
-          {pageSizeOptions.map(size => <option key={size} value={size}>{size}</option>)}
+        <select
+          value={pageSize}
+          onChange={e => onPageSizeChange(Number(e.target.value))}
+          style={{
+            background: t.name === "dark" ? "#242a3b" : "#ffffff",
+            color: t.textPrimary,
+            border: `1px solid ${t.borderStrong}`,
+            borderRadius: 9,
+            padding: "6px 30px 6px 9px",
+            outline: "none",
+            colorScheme: t.name === "dark" ? "dark" : "light",
+            fontFamily: "'Inter', sans-serif",
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          {pageSizeOptions.map(size => (
+            <option
+              key={size}
+              value={size}
+              style={{
+                background: t.name === "dark" ? "#242a3b" : "#ffffff",
+                color: t.textPrimary,
+              }}
+            >
+              {size}
+            </option>
+          ))}
         </select>
         <GhostButton theme={theme} disabled={safePage === 1} onClick={() => onPageChange(safePage - 1)} style={{ padding: "7px 10px" }}>Previous</GhostButton>
         {pageNumbers.map((n, i) => <React.Fragment key={n}>{i > 0 && n - pageNumbers[i-1] > 1 && <span style={{ color: t.textMuted }}>…</span>}<button onClick={() => onPageChange(n)} aria-current={safePage === n ? "page" : undefined} style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${safePage === n ? t.borderAccent : t.border}`, background: safePage === n ? t.accentSoft : t.surfaceGlass, color: safePage === n ? t.accent : t.textSecondary, cursor: "pointer", fontWeight: 700 }}>{n}</button></React.Fragment>)}
@@ -646,6 +694,40 @@ const ExamCard = React.memo(function ExamCard({ exam, theme }) {
   );
 });
 
+const ExamListRow = React.memo(function ExamListRow({ exam, theme }) {
+  const t = THEMES[theme];
+  const meta = examStatusMeta(exam.status, t);
+  const running = String(exam.status || "").toUpperCase() === "RUNNING";
+  return (
+    <div
+      className="row-hover"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(250px, 1.6fr) minmax(150px, 0.8fr) minmax(190px, 1fr) 110px 130px",
+        alignItems: "center",
+        gap: 16,
+        padding: "13px 16px",
+        minWidth: 900,
+        borderBottom: `1px solid ${t.border}`,
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ color: t.textPrimary, fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{exam.name}</div>
+        <div style={{ marginTop: 3, color: t.textMuted, fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>{exam.examid || "No exam ID"}</div>
+      </div>
+      <div style={{ color: t.textSecondary, fontSize: 12.5 }}>{exam.date}</div>
+      <div style={{ color: t.textMuted, fontSize: 12 }}>{exam.starttime} - {exam.endtime}</div>
+      <div style={{ color: t.textSecondary, fontSize: 12.5, fontWeight: 600 }}>{exam.durationminutes}<span style={{ color: t.textMuted, fontSize: 10.5, marginLeft: 4 }}>min</span></div>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <span style={{ background: meta.gradient, color: "#fff", padding: "4px 10px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {running && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#fff", animation: "pulseDot 1.4s ease-in-out infinite" }} />}
+          {meta.label}
+        </span>
+      </div>
+    </div>
+  );
+});
+
 /* ============= Main ============= */
 
 export default function AdminPanel() {
@@ -664,6 +746,10 @@ export default function AdminPanel() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [examFilter, setExamFilter] = useState("all");
   const [examSearch, setExamSearch] = useState("");
+  //Exam-GridListPagination
+  const [examView, setExamView] = useState(() => localStorage.getItem("3rdeyez360.examView") || "grid");
+  const [examPage, setExamPage] = useState(1);
+  const [examPageSize, setExamPageSize] = useState(12);
   const [showCreate, setShowCreate] = useState(false);
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [bulkFile, setBulkFile] = useState(null);
@@ -673,6 +759,9 @@ export default function AdminPanel() {
   const [bulkError, setBulkError] = useState("");
   const [bulkValidating, setBulkValidating] = useState(false);
   const [bulkCreating, setBulkCreating] = useState(false);
+  //BulkUpload-Progress
+  const [bulkProgress, setBulkProgress] = useState(0);
+  const [bulkProgressStage, setBulkProgressStage] = useState("");
   const [newUser, setNewUser] = useState({ first_name: "", last_name: "", email: "", role: "Candidate" });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -684,6 +773,15 @@ export default function AdminPanel() {
   const [userPageSize, setUserPageSize] = useState(24);
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageSize, setAuditPageSize] = useState(25);
+  //Admin-CompactResponsiveLayout
+  const contentScrollRef = useRef(null);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const handleContentScroll = useCallback((event) => {
+    const shouldCollapse = event.currentTarget.scrollTop > 28;
+    setHeaderCollapsed((current) =>
+      current === shouldCollapse ? current : shouldCollapse,
+    );
+  }, []);
 
   const headers = useMemo(() => (accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), [accessToken]);
 
@@ -774,8 +872,11 @@ export default function AdminPanel() {
     setSearch("");
     setExamFilter("all");
     setExamSearch("");
+    setExamPage(1);
     setUserPage(1);
     setAuditPage(1);
+    setHeaderCollapsed(false);
+    if (contentScrollRef.current) contentScrollRef.current.scrollTop = 0;
     refreshCurrentTab();
   }, [tab, accessToken, refreshCurrentTab]);
 
@@ -886,6 +987,8 @@ export default function AdminPanel() {
     setBulkRows([]);
     setBulkSummary(null);
     setBulkError("");
+    setBulkProgress(0);
+    setBulkProgressStage("");
   };
   const encodeFileBase64 = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -903,6 +1006,8 @@ export default function AdminPanel() {
     setBulkValidating(true);
     setBulkError("");
     setBulkSummary(null);
+    setBulkProgress(0);
+    setBulkProgressStage("");
     try {
       const contentBase64 = await encodeFileBase64(file);
       const response = await axios.post(`${API}/api/users/bulk/validate`, { filename: file.name, content_base64: contentBase64 }, { headers });
@@ -919,16 +1024,56 @@ export default function AdminPanel() {
   };
   const createBulkUsers = async () => {
     if (!bulkFile || !bulkFileBase64 || !bulkSummary?.valid) return;
+
+    //BulkUpload-Progress
     setBulkCreating(true);
     setBulkError("");
+    setBulkProgress(1);
+    setBulkProgressStage("Preparing secure upload...");
+
     try {
-      const response = await axios.post(`${API}/api/users/bulk/create`, { filename: bulkFile.name, content_base64: bulkFileBase64 }, { headers });
+      const response = await axios.post(
+        `${API}/api/users/bulk/create`,
+        { filename: bulkFile.name, content_base64: bulkFileBase64 },
+        {
+          headers,
+          onUploadProgress: (progressEvent) => {
+            if (!progressEvent.total) {
+              setBulkProgress((current) => Math.max(current, 12));
+              setBulkProgressStage("Uploading user file...");
+              return;
+            }
+
+            // Reserve the final 15% for server-side validation and user creation.
+            const uploadPercent = Math.round(
+              (progressEvent.loaded / progressEvent.total) * 85,
+            );
+            setBulkProgress(Math.max(1, Math.min(85, uploadPercent)));
+            setBulkProgressStage("Uploading user file...");
+          },
+        },
+      );
+
+      setBulkProgress(92);
+      setBulkProgressStage("Creating user accounts...");
+
       const results = response.data?.results || [];
       setBulkRows(results);
-      setBulkSummary({ total: response.data?.total || 0, created: response.data?.created || 0, failed: response.data?.failed || 0, complete: true });
+      setBulkSummary({
+        total: response.data?.total || 0,
+        created: response.data?.created || 0,
+        failed: response.data?.failed || 0,
+        complete: true,
+      });
+
       await loadStats();
       await loadUsers(tab === "Examiners" ? "Examiner" : "Candidate");
+
+      setBulkProgress(100);
+      setBulkProgressStage("Bulk upload completed");
     } catch (error) {
+      setBulkProgress(0);
+      setBulkProgressStage("");
       setBulkError(extractErrorMessage(error, "Bulk user creation failed"));
     } finally {
       setBulkCreating(false);
@@ -979,6 +1124,18 @@ export default function AdminPanel() {
     if (examFilter === "completed") return s === "COMPLETED" || s === "TERMINATED";
     return true;
   });
+
+  const examTotalPages = Math.max(1, Math.ceil(filteredExams.length / examPageSize));
+  const safeExamPage = Math.min(examPage, examTotalPages);
+  const pagedExams = filteredExams.slice(
+    (safeExamPage - 1) * examPageSize,
+    safeExamPage * examPageSize,
+  );
+  const changeExamView = (view) => {
+    setExamView(view);
+    setExamPage(1);
+    try { localStorage.setItem("3rdeyez360.examView", view); } catch (e) {}
+  };
 
   const TAB_ICONS = {
     Dashboard: (
@@ -1083,6 +1240,7 @@ export default function AdminPanel() {
           66% { transform: translate(-20px, 26px) scale(0.95); }
         }
         @keyframes shine { 0% { transform: translateX(-120%) skewX(-20deg); } 100% { transform: translateX(220%) skewX(-20deg); } }
+        @keyframes progressShimmer { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
         .cta-shine::before { content: ""; position: absolute; top: 0; left: 0; bottom: 0; width: 40%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent); transform: translateX(-120%) skewX(-20deg); pointer-events: none; }
         .cta-shine:hover::before { animation: shine 0.9s ease; }
         ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -1095,6 +1253,26 @@ export default function AdminPanel() {
         .row-hover:hover { background: ${t.rowHover}; }
         input::placeholder { color: ${t.textMuted}; opacity: 0.85; }
         button, a, input { transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease; }
+        /* Admin-CompactResponsiveLayout */
+        .admin-header, .admin-tabs { transition: min-height 0.25s ease, height 0.25s ease, padding 0.25s ease, background 0.5s ease, border-color 0.5s ease, box-shadow 0.25s ease; }
+        .admin-tab-strip { scrollbar-width: thin; }
+        .admin-tab-strip::-webkit-scrollbar { height: 4px; }
+        .admin-content { overscroll-behavior: contain; scroll-behavior: smooth; }
+        .admin-sticky-pagination { margin-top: 12px; border-radius: 14px 14px 0 0; }
+        @media (max-width: 900px) {
+          .admin-header { padding-left: 16px !important; padding-right: 16px !important; }
+          .admin-tabs { padding-left: 12px !important; padding-right: 12px !important; }
+          .admin-content { padding: 18px 16px 82px !important; }
+          .admin-user-name { display: none !important; }
+        }
+        @media (max-width: 640px) {
+          .admin-header { padding-left: 12px !important; padding-right: 12px !important; gap: 8px !important; }
+          .admin-tabs { flex-wrap: nowrap !important; overflow-x: auto !important; justify-content: flex-start !important; }
+          .admin-tab-button { flex: 0 0 auto; padding-left: 11px !important; padding-right: 11px !important; }
+          .admin-content { padding: 14px 12px 78px !important; }
+          .admin-sticky-pagination { padding: 9px 10px !important; justify-content: center !important; }
+          .admin-sticky-pagination > div { justify-content: center !important; }
+        }
       `}</style>
 
       <div style={{ position: "absolute", top: "-10%", left: "-8%", width: 480, height: 480, borderRadius: "50%", background: `radial-gradient(circle, ${t.accent}22 0%, transparent 65%)`, filter: "blur(50px)", animation: "floatBlob 24s ease-in-out infinite", pointerEvents: "none", willChange: "transform", transform: "translateZ(0)" }} />
@@ -1102,9 +1280,11 @@ export default function AdminPanel() {
 
       {/* Top bar */}
       <header
+        className="admin-header"
         style={{
-          height: 64,
-          padding: "0 26px",
+          height: headerCollapsed ? 46 : 54,
+          minHeight: headerCollapsed ? 46 : 54,
+          padding: headerCollapsed ? "0 18px" : "0 22px",
           display: "flex",
           alignItems: "center",
           gap: 14,
@@ -1115,21 +1295,22 @@ export default function AdminPanel() {
           WebkitBackdropFilter: "blur(24px)",
           position: "relative",
           zIndex: 10,
-          transition: "background 0.55s ease, border-color 0.5s ease",
+          transition: "height 0.25s ease, min-height 0.25s ease, padding 0.25s ease, background 0.55s ease, border-color 0.5s ease",
+          boxShadow: headerCollapsed ? "0 8px 24px rgba(0,0,0,0.10)" : "none",
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}>
-          <span style={{ fontWeight: 700, fontSize: 16, color: t.textPrimary, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.3 }}>3rdEyeZ360</span>
-          <span style={{ fontSize: 10.5, color: t.textMuted, letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>Admin Panel</span>
+          <span style={{ fontWeight: 700, fontSize: headerCollapsed ? 14 : 15, color: t.textPrimary, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.3 }}>3rdEyeZ360</span>
+          <span style={{ fontSize: headerCollapsed ? 0 : 9.5, opacity: headerCollapsed ? 0 : 1, height: headerCollapsed ? 0 : "auto", overflow: "hidden", transition: "all 0.2s ease", color: t.textMuted, letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>Admin Panel</span>
         </div>
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           {user?.name && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 14px 5px 5px", borderRadius: 999, background: t.surfaceGlass, border: `1px solid ${t.border}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: headerCollapsed ? "3px 9px 3px 3px" : "4px 12px 4px 4px", borderRadius: 999, background: t.surfaceGlass, border: `1px solid ${t.border}` }}>
               <div className="brand-gradient" style={{ width: 30, height: 30, borderRadius: "50%", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
                 {String(user.name).charAt(0).toUpperCase()}
               </div>
-              <span style={{ fontSize: 13, color: t.textPrimary, fontWeight: 600 }}>{user.name}</span>
+              <span className="admin-user-name" style={{ fontSize: 12, color: t.textPrimary, fontWeight: 600 }}>{user.name}</span>
             </div>
           )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
@@ -1139,9 +1320,10 @@ export default function AdminPanel() {
 
       {/* Tabs */}
       <div
+        className="admin-tabs admin-tab-strip"
         style={{
-          minHeight: 50,
-          padding: "8px 26px",
+          minHeight: headerCollapsed ? 38 : 44,
+          padding: headerCollapsed ? "4px 18px" : "6px 22px",
           display: "flex",
           alignItems: "center",
           gap: 8,
@@ -1160,12 +1342,13 @@ export default function AdminPanel() {
           return (
             <button
               key={tabName}
+              className="admin-tab-button"
               onClick={() => setTab(tabName)}
               style={{
-                height: 34,
-                padding: "0 15px",
+                height: headerCollapsed ? 28 : 31,
+                padding: headerCollapsed ? "0 11px" : "0 13px",
                 borderRadius: 10,
-                fontSize: 12.5,
+                fontSize: headerCollapsed ? 11 : 11.5,
                 fontWeight: 700,
                 cursor: "pointer",
                 display: "inline-flex",
@@ -1186,7 +1369,12 @@ export default function AdminPanel() {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "26px", position: "relative", zIndex: 1 }}>
+      <div
+        ref={contentScrollRef}
+        className="admin-content"
+        onScroll={handleContentScroll}
+        style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: "22px 22px 84px", position: "relative", zIndex: 1 }}
+      >
         <div style={{ maxWidth: 1240, margin: "0 auto" }}>
           {/* ---------------- Dashboard ---------------- */}
           {tab === "Dashboard" && (
@@ -1366,7 +1554,7 @@ export default function AdminPanel() {
                   {users.length === 0 ? `No ${tab.toLowerCase()} yet.` : "No results match your search or filter."}
                 </div>
               ) : (
-                <div style={userView === "list" ? { ...card, overflow: "hidden" } : {}}>
+                <div style={userView === "list" ? { ...card, overflow: "visible" } : {}}>
                   {userView === "list" && (
                     <div style={{ overflowX: "auto" }}>
                       <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.6fr) minmax(180px, 1fr) 130px 210px", gap: 16, padding: "11px 16px", minWidth: 820, background: t.tableHead, borderBottom: `1px solid ${t.border}`, color: t.textMuted, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase" }}><span>User</span><span>Joined</span><span>Status</span><span style={{ textAlign: "right" }}>Actions</span></div>
@@ -1379,7 +1567,7 @@ export default function AdminPanel() {
                     </div>
                   )}
                   <div style={{ marginTop: userView === "grid" ? 18 : 0, ...card, borderRadius: userView === "grid" ? 14 : 0, border: userView === "grid" ? `1px solid ${t.border}` : "none" }}>
-                    <Pagination page={safeUserPage} totalItems={filtered.length} pageSize={userPageSize} onPageChange={setUserPage} onPageSizeChange={(size) => { setUserPageSize(size); setUserPage(1); }} theme={theme} pageSizeOptions={userView === "grid" ? [12, 24, 48] : [25, 50, 100]} />
+                    <Pagination page={safeUserPage} totalItems={filtered.length} pageSize={userPageSize} onPageChange={setUserPage} onPageSizeChange={(size) => { setUserPageSize(size); setUserPage(1); }} theme={theme} pageSizeOptions={userView === "grid" ? [12, 24, 48] : [25, 50, 100]} sticky />
                   </div>
                 </div>
               )}
@@ -1406,7 +1594,7 @@ export default function AdminPanel() {
                   </svg>
                   <input
                     value={examSearch}
-                    onChange={(e) => setExamSearch(e.target.value)}
+                    onChange={(e) => { setExamSearch(e.target.value); setExamPage(1); }}
                     placeholder="Search exams by name or date..."
                     style={{ ...inputStyle(false), paddingLeft: 40, borderRadius: 12 }}
                     onFocus={(e) => { e.target.style.borderColor = t.accent; e.target.style.boxShadow = `0 0 0 3px ${t.accentSoft}`; }}
@@ -1419,7 +1607,7 @@ export default function AdminPanel() {
                     return (
                       <button
                         key={c.key}
-                        onClick={() => setExamFilter(c.key)}
+                        onClick={() => { setExamFilter(c.key); setExamPage(1); }}
                         style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "9px 13px", fontSize: 12, fontWeight: 700, borderRadius: 999, border: `1px solid ${active ? "transparent" : t.border}`, background: active ? `linear-gradient(135deg, ${c.color} 0%, ${c.color}cc 100%)` : t.surfaceGlass, color: active ? "#ffffff" : t.textSecondary, cursor: "pointer", fontFamily: "'Inter', sans-serif", boxShadow: active ? `0 4px 12px ${c.color}55` : "none", transition: "all 0.25s ease" }}
                         onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = t.surfaceGlassHover; }}
                         onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = t.surfaceGlass; }}
@@ -1430,6 +1618,7 @@ export default function AdminPanel() {
                     );
                   })}
                 </div>
+                <ViewToggle value={examView} onChange={changeExamView} theme={theme} />
               </div>
 
               {filteredExams.length === 0 ? (
@@ -1437,10 +1626,35 @@ export default function AdminPanel() {
                   {exams.length === 0 ? "No exams created yet." : "No exams match your search or filter."}
                 </div>
               ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
-                  {filteredExams.map((exam, i) => (
-                    <ExamCard key={exam.examid || i} exam={exam} theme={theme} />
-                  ))}
+                <div style={examView === "list" ? { ...card, overflow: "visible" } : {}}>
+                  {examView === "grid" ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
+                      {pagedExams.map((exam, i) => (
+                        <ExamCard key={exam.examid || i} exam={exam} theme={theme} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ overflowX: "auto" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "minmax(250px, 1.6fr) minmax(150px, 0.8fr) minmax(190px, 1fr) 110px 130px", gap: 16, padding: "11px 16px", minWidth: 900, background: t.tableHead, borderBottom: `1px solid ${t.border}`, color: t.textMuted, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase" }}>
+                        <span>Exam</span><span>Date</span><span>Schedule</span><span>Duration</span><span style={{ textAlign: "right" }}>Status</span>
+                      </div>
+                      {pagedExams.map((exam, i) => (
+                        <ExamListRow key={exam.examid || i} exam={exam} theme={theme} />
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ marginTop: examView === "grid" ? 18 : 0, ...card, borderRadius: examView === "grid" ? 14 : 0, border: examView === "grid" ? `1px solid ${t.border}` : "none" }}>
+                    <Pagination
+                      page={safeExamPage}
+                      totalItems={filteredExams.length}
+                      pageSize={examPageSize}
+                      onPageChange={setExamPage}
+                      onPageSizeChange={(size) => { setExamPageSize(size); setExamPage(1); }}
+                      theme={theme}
+                      pageSizeOptions={examView === "grid" ? [12, 24, 48] : [25, 50, 100]}
+                      sticky
+                    />
+                  </div>
                 </div>
               )}
             </div>
@@ -1450,8 +1664,8 @@ export default function AdminPanel() {
           {tab === "Audit Logs" && (
             <div>
               <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, color: t.textPrimary, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.5 }}>Audit Logs</h2>
-              <div style={card}>
-                <div style={{ overflowX: "auto" }}>
+              <div style={{ ...card, overflow: "visible" }}>
+                <div style={{ overflowX: "auto", borderRadius: "18px 18px 0 0" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
                     <thead>
                       <tr style={{ background: t.tableHead, borderBottom: `1px solid ${t.border}` }}>
@@ -1490,7 +1704,7 @@ export default function AdminPanel() {
                     </tbody>
                   </table>
                 </div>
-                <Pagination page={safeAuditPage} totalItems={auditLogs.length} pageSize={auditPageSize} onPageChange={setAuditPage} onPageSizeChange={(size) => { setAuditPageSize(size); setAuditPage(1); }} theme={theme} />
+                <Pagination page={safeAuditPage} totalItems={auditLogs.length} pageSize={auditPageSize} onPageChange={setAuditPage} onPageSizeChange={(size) => { setAuditPageSize(size); setAuditPage(1); }} theme={theme} sticky />
               </div>
             </div>
           )}
@@ -1517,7 +1731,50 @@ export default function AdminPanel() {
                 [bulkSummary.complete ? "Created" : "Valid", bulkSummary.complete ? bulkSummary.created : bulkSummary.valid, t.success],
                 [bulkSummary.complete ? "Failed" : "Invalid", bulkSummary.complete ? bulkSummary.failed : bulkSummary.invalid, t.danger],
               ].map(([label, value, color]) => <div key={label} style={{ padding: "7px 11px", borderRadius: 999, background: `${color}18`, border: `1px solid ${color}44`, color, fontSize: 11.5, fontWeight: 800 }}>{label}: {value}</div>)}</div>}
-              {bulkRows.length > 0 && <div style={{ marginTop: 14, border: `1px solid ${t.border}`, borderRadius: 12, overflow: "hidden" }}><div style={{ overflowX: "auto", maxHeight: 310 }}><table style={{ width: "100%", minWidth: 720, borderCollapse: "collapse" }}><thead><tr style={{ background: t.tableHead }}>{["Row", "Name", "Email", "Role", "Status"].map((heading) => <th key={heading} style={{ ...th, position: "sticky", top: 0, background: t.tableHead }}>{heading}</th>)}</tr></thead><tbody>{bulkRows.map((row) => <tr key={`${row.row}-${row.email}`} style={{ borderTop: `1px solid ${t.border}` }}><td style={{ padding: "10px 16px", color: t.textMuted, fontSize: 12 }}>{row.row}</td><td style={{ padding: "10px 16px", color: t.textPrimary, fontSize: 12.5 }}>{row.name || "—"}</td><td style={{ padding: "10px 16px", color: t.textSecondary, fontSize: 12 }}>{row.email || "—"}</td><td style={{ padding: "10px 16px", color: t.textSecondary, fontSize: 12 }}>{row.role || "—"}</td><td style={{ padding: "10px 16px", color: row.valid && row.status !== "failed" ? t.success : t.danger, fontSize: 11.5, fontWeight: 700 }}>{row.status === "created" ? "Created" : row.valid ? "Valid" : (row.message || row.errors?.join("; ") || "Invalid")}</td></tr>)}</tbody></table></div></div>}
+              {(bulkCreating || bulkProgress > 0) && (
+                <div
+                  aria-live="polite"
+                  aria-busy={bulkCreating}
+                  style={{
+                    marginTop: 16,
+                    padding: "14px 16px",
+                    borderRadius: 13,
+                    background: t.name === "dark" ? "rgba(91,140,255,0.08)" : "rgba(75,96,232,0.07)",
+                    border: `1px solid ${bulkProgress === 100 ? t.success + "55" : t.borderAccent}`,
+                    boxShadow: bulkCreating ? `0 8px 24px ${t.accent}12` : "none",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 9 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+                      {bulkCreating ? (
+                        <span style={{ width: 15, height: 15, border: `2px solid ${t.accent}33`, borderTopColor: t.accent, borderRadius: "50%", animation: "spin 0.75s linear infinite", flexShrink: 0 }} />
+                      ) : (
+                        <span style={{ width: 18, height: 18, borderRadius: "50%", background: t.successBg, color: t.success, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        </span>
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ color: t.textPrimary, fontSize: 12.5, fontWeight: 700 }}>{bulkProgressStage || "Processing bulk upload..."}</div>
+                        <div style={{ marginTop: 2, color: t.textMuted, fontSize: 10.5 }}>Keep this window open until the process is complete.</div>
+                      </div>
+                    </div>
+                    <strong style={{ color: bulkProgress === 100 ? t.success : t.accent, fontSize: 13, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{bulkProgress}%</strong>
+                  </div>
+                  <div
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow={bulkProgress}
+                    style={{ height: 8, borderRadius: 999, overflow: "hidden", background: t.name === "dark" ? "rgba(255,255,255,0.08)" : "rgba(20,28,60,0.09)", border: `1px solid ${t.border}` }}
+                  >
+                    <div style={{ position: "relative", width: `${bulkProgress}%`, height: "100%", borderRadius: 999, background: bulkProgress === 100 ? t.successGradient : t.accentGradient, transition: "width 0.28s ease", overflow: "hidden" }}>
+                      {bulkCreating && <span style={{ position: "absolute", inset: 0, width: "35%", background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.48), transparent)", animation: "progressShimmer 1.35s ease-in-out infinite" }} />}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {/* BulkUpload-OpaqueStickyHeader */}
+              {bulkRows.length > 0 && <div style={{ marginTop: 14, border: `1px solid ${t.border}`, borderRadius: 12, overflow: "hidden" }}><div style={{ overflowX: "auto", maxHeight: 310, position: "relative" }}><table style={{ width: "100%", minWidth: 720, borderCollapse: "separate", borderSpacing: 0 }}><thead style={{ position: "sticky", top: 0, zIndex: 12 }}><tr style={{ background: t.name === "dark" ? "#252a3a" : "#edf1fb" }}>{["Row", "Name", "Email", "Role", "Status"].map((heading) => <th key={heading} style={{ ...th, position: "sticky", top: 0, zIndex: 13, background: t.name === "dark" ? "#252a3a" : "#edf1fb", borderBottom: `1px solid ${t.borderStrong}`, boxShadow: "0 2px 8px rgba(0,0,0,0.14)" }}>{heading}</th>)}</tr></thead><tbody>{bulkRows.map((row) => <tr key={`${row.row}-${row.email}`} style={{ borderTop: `1px solid ${t.border}` }}><td style={{ padding: "10px 16px", color: t.textMuted, fontSize: 12 }}>{row.row}</td><td style={{ padding: "10px 16px", color: t.textPrimary, fontSize: 12.5 }}>{row.name || "—"}</td><td style={{ padding: "10px 16px", color: t.textSecondary, fontSize: 12 }}>{row.email || "—"}</td><td style={{ padding: "10px 16px", color: t.textSecondary, fontSize: 12 }}>{row.role || "—"}</td><td style={{ padding: "10px 16px", color: row.valid && row.status !== "failed" ? t.success : t.danger, fontSize: 11.5, fontWeight: 700 }}>{row.status === "created" ? "Created" : row.valid ? "Valid" : (row.message || row.errors?.join("; ") || "Invalid")}</td></tr>)}</tbody></table></div></div>}
             </div>
             <div style={{ padding: "14px 24px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${t.border}` }}>
               <GhostButton theme={theme} disabled={bulkCreating || bulkValidating} onClick={() => setShowBulkUpload(false)}>Close</GhostButton>
