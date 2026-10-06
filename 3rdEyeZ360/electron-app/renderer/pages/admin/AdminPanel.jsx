@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import axios from "axios";
 import useAuthStore from "../../store/authStore";
+import ProjectManagement from "./ProjectManagement";
 
 const API = "http://localhost:3000";
 const THEME_STORAGE_KEY = "3rdeyez360.theme";
-const TABS = ["Dashboard", "Candidates", "Examiners", "Exams", "Audit Logs"];
+const TABS = ["Dashboard", "Candidates", "Examiners", "Project Management", "Exams", "Audit Logs"];
 
 /* ============= Theme system ============= */
 
@@ -850,6 +851,7 @@ export default function AdminPanel() {
       await loadUsers("Examiner");
       return;
     }
+    if (tab === "Project Management") return;
     if (tab === "Exams") {
       await loadExams();
       await loadStats();
@@ -1146,6 +1148,9 @@ export default function AdminPanel() {
     ),
     Examiners: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+    ),
+    "Project Management": (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2"/></svg>
     ),
     Exams: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M9 10h6M9 14h4" /></svg>
@@ -1574,6 +1579,7 @@ export default function AdminPanel() {
             </div>
           )}
 
+          {tab === "Project Management" && <ProjectManagement theme={theme} colors={t} headers={headers} />}
           {/* ---------------- Exams ---------------- */}
           {tab === "Exams" && (
             <div>

@@ -31,6 +31,27 @@ async def connect_db():
 
     await _db.exams.create_index("exam_id", unique=True)
     await _db.assessments.create_index("assessment_id", unique=True)
+    await _db.projects.create_index("project_id", unique=True)
+
+    # Keep project names unique only for active/non-deleted projects.
+    # A soft-deleted project remains available for historical audit/reporting,
+    # while its former name can be reused by a newly created project.
+    project_indexes = await _db.projects.index_information()
+    normalized_index = project_indexes.get("normalized_name_1")
+    expected_partial_filter = {"is_deleted": False}
+    if normalized_index and (
+        not normalized_index.get("unique")
+        or normalized_index.get("partialFilterExpression") != expected_partial_filter
+    ):
+        await _db.projects.drop_index("normalized_name_1")
+
+    await _db.projects.create_index(
+        "normalized_name",
+        unique=True,
+        partialFilterExpression=expected_partial_filter,
+    )
+    await _db.project_user_mappings.create_index([("project_id", 1), ("user_id", 1), ("role", 1)], unique=True)
+    await _db.project_user_mappings.create_index([("user_id", 1), ("is_active", 1)])
 
     print(f"MongoDB connected - {db_name}")
 

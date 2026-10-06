@@ -6,6 +6,7 @@ import useSocket from "../../hooks/useSocket";
 const API = "http://localhost:3000";
 const THEME_STORAGE_KEY = "3rdeyez360.theme";
 const MAX_CANDIDATES_PER_EXAM = 25;
+const ALL_PROJECTS_ID = "ALL";
 
 /* ============= Theme system ============= */
 
@@ -395,6 +396,9 @@ export default function AssignCandidates({ exam, onBack }) {
   const [modalType, setModalType] = useState("error");
 
   const examId = exam?.exam_id || exam?.examid || "";
+  const examProjectId = String(exam?.project_id || exam?.projectid || "").trim();
+  const isAllProjectsExam = examProjectId === ALL_PROJECTS_ID || Boolean(exam?.is_global || exam?.isglobal);
+  const projectName = isAllProjectsExam ? "ALL PROJECTS" : exam?.project_name || exam?.projectname || "UNASSIGNED";
   const assignedCount = assigned.length;
   const assignmentLimitReached = assignedCount >= MAX_CANDIDATES_PER_EXAM;
 
@@ -426,7 +430,12 @@ export default function AssignCandidates({ exam, onBack }) {
 
     try {
       const [allRes, assignedRes] = await Promise.all([
-        axios.get(`${API}/api/users?role=Candidate`, { headers }),
+        axios.get(
+          !isAllProjectsExam && examProjectId
+            ? `${API}/api/projects/${examProjectId}/eligible/Candidate`
+            : `${API}/api/users?role=Candidate`,
+          { headers },
+        ),
 
         axios.get(`${API}/api/exams/${examId}/assessments`, { headers }),
       ]);
@@ -487,7 +496,7 @@ export default function AssignCandidates({ exam, onBack }) {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [examId, headers]);
+  }, [examId, headers, examProjectId, isAllProjectsExam]);
 
   useEffect(() => {
     loadData();
@@ -1246,7 +1255,7 @@ export default function AssignCandidates({ exam, onBack }) {
               lineHeight: 1,
             }}
           >
-            {exam?.name || "Exam"}
+            {exam?.name || "Exam"} · {projectName}
           </span>
         </div>
 

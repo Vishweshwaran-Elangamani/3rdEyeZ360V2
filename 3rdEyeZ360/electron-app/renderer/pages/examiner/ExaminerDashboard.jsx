@@ -2574,6 +2574,10 @@ export default function ExaminerDashboard() {
   const [reviewingRequestId, setReviewingRequestId] = useState(null);
   const [clock, setClock] = useState(new Date());
   const [search, setSearch] = useState("");
+  const [projectFilter, setProjectFilter] = useState("ALL");
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const projectDropdownRef = useRef(null);
+  const [mappedProjects, setMappedProjects] = useState([]);
   const [searchFocused, setSearchFocused] = useState(false);
   const [statusFilter, setStatusFilter] = useState("active");
   const [candidateSearch, setCandidateSearch] = useState("");
@@ -2697,6 +2701,23 @@ export default function ExaminerDashboard() {
     }
     return counts;
   }, [reentryRequests]);
+
+  useEffect(() => { if (!accessToken) return; axios.get(`${API}/api/projects/me`, { headers }).then((response) => setMappedProjects(response.data || [])).catch(() => setMappedProjects([])); }, [accessToken, headers]);
+  useEffect(() => {
+    if (!projectDropdownOpen) return undefined;
+    const closeOnOutside = (event) => {
+      if (!projectDropdownRef.current?.contains(event.target)) setProjectDropdownOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setProjectDropdownOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [projectDropdownOpen]);
 
   const loadExams = useCallback(async () => {
     setLoadingExams(true);
@@ -3844,17 +3865,25 @@ export default function ExaminerDashboard() {
       month: "long",
     });
 
-    const total = exams.length;
-    const running = exams.filter(
+    const projectExams = exams.filter((exam) => {
+      const examProjectId = String(exam.project_id || exam.projectid || "").trim();
+      const isCommonAssessment =
+        examProjectId === "ALL" || Boolean(exam.is_global || exam.isglobal);
+      if (projectFilter === "ALL") return isCommonAssessment;
+      return !isCommonAssessment && examProjectId === String(projectFilter);
+    });
+
+    const total = projectExams.length;
+    const running = projectExams.filter(
       (e) => String(e.status).toUpperCase() === "RUNNING",
     ).length;
-    const published = exams.filter(
+    const published = projectExams.filter(
       (e) => String(e.status).toUpperCase() === "PUBLISHED",
     ).length;
-    const draft = exams.filter(
+    const draft = projectExams.filter(
       (e) => String(e.status).toUpperCase() === "DRAFT",
     ).length;
-    const completed = exams.filter((e) => {
+    const completed = projectExams.filter((e) => {
       const s = String(e.status).toUpperCase();
       return s === "COMPLETED" || s === "TERMINATED";
     }).length;
@@ -3900,7 +3929,7 @@ export default function ExaminerDashboard() {
       }
     };
 
-    const filteredExams = exams.filter((e) => {
+    const filteredExams = projectExams.filter((e) => {
       if (!matchesStatusFilter(e)) return false;
       const q = search.trim().toLowerCase();
       if (!q) return true;
@@ -3911,6 +3940,21 @@ export default function ExaminerDashboard() {
         .includes(q);
     });
 
+    const selectedProjectLabel = projectFilter === "ALL"
+      ? "Common Assessments"
+      : mappedProjects.find((project) => String(project.project_id) === String(projectFilter))?.project_name || "Common Assessments";
+    const projectOptions = [{ project_id: "ALL", project_name: "Common Assessments" }, ...mappedProjects];
+    const projectSelector = (
+      <div ref={projectDropdownRef} style={{ position: "relative", zIndex: 120, flexShrink: 0 }}>
+        <button type="button" aria-haspopup="listbox" aria-expanded={projectDropdownOpen} onClick={() => setProjectDropdownOpen((open) => !open)} style={{ height: 40, minWidth: 164, padding: "0 12px", borderRadius: 11, border: `1px solid ${projectDropdownOpen ? t.borderAccent : t.border}`, background: projectDropdownOpen ? t.surfaceGlassHover : t.inputBg, color: t.textPrimary, display: "inline-flex", alignItems: "center", justifyContent: "space-between", gap: 11, cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 750, boxShadow: projectDropdownOpen ? `0 0 0 3px ${t.accentSoft}` : "none" }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2"/></svg><span style={{ maxWidth: 130, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{selectedProjectLabel}</span></span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transform: projectDropdownOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .22s ease" }}><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        {projectDropdownOpen ? <div role="listbox" aria-label="Filter exams by project" style={{ position: "absolute", top: "calc(100% + 7px)", left: 0, zIndex: 1200, width: 220, maxHeight: 250, overflowY: "auto", padding: 6, borderRadius: 12, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: t.name === "dark" ? "0 20px 46px rgba(0,0,0,.58)" : "0 20px 46px rgba(20,28,60,.2)" }}>
+          {projectOptions.map((project) => { const value=String(project.project_id); const active=String(projectFilter)===value; return <button key={value} type="button" role="option" aria-selected={active} onClick={() => { setProjectFilter(value); setProjectDropdownOpen(false); }} style={{ width: "100%", minHeight: 38, padding: "0 10px", border: 0, borderRadius: 9, background: active ? t.accentSoft : "transparent", color: active ? t.accent : t.textSecondary, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, cursor: "pointer", textAlign: "left", fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: active ? 850 : 650 }} onMouseEnter={(event) => { if(!active) event.currentTarget.style.background=t.surfaceGlassHover; }} onMouseLeave={(event) => { if(!active) event.currentTarget.style.background="transparent"; }}><span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project.project_name}</span>{active ? <span style={{ color:t.accent, fontSize:14 }}>✓</span> : null}</button>; })}
+        </div> : null}
+      </div>
+    );
     return (
       <div
         style={{
@@ -4431,35 +4475,15 @@ export default function ExaminerDashboard() {
               }}
             >
               <div>
-                <h3
-                  style={{
-                    fontSize: 20,
-                    fontWeight: 700,
-                    color: t.textPrimary,
-                    margin: 0,
-                    fontFamily: "'Space Grotesk', sans-serif",
-                    letterSpacing: -0.4,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                  }}
-                >
-                  Your Exams
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: t.textMuted,
-                      fontWeight: 600,
-                      padding: "3px 10px",
-                      borderRadius: 999,
-                      background: t.surfaceGlass,
-                      border: `1px solid ${t.border}`,
-                    }}
-                  >
-                    {filteredExams.length}
-                    {filteredExams.length !== total ? ` of ${total}` : ""}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <h3 style={{ fontSize: 20, fontWeight: 700, color: t.textPrimary, margin: 0, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.4, whiteSpace: "nowrap" }}>
+                    Your Exams
+                  </h3>
+                  {projectSelector}
+                  <span style={{ minHeight: 28, padding: "0 10px", borderRadius: 999, display: "inline-flex", alignItems: "center", color: t.textMuted, background: t.surfaceGlass, border: `1px solid ${t.border}`, fontSize: 11, fontWeight: 750, whiteSpace: "nowrap" }}>
+                    {filteredExams.length}{filteredExams.length !== total ? ` of ${total}` : ""}
                   </span>
-                </h3>
+                </div>
                 <p
                   style={{
                     fontSize: 12.5,

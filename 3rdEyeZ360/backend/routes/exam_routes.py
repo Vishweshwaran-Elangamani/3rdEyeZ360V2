@@ -30,6 +30,8 @@ router = APIRouter(
 
 logger = logging.getLogger(__name__)
 MAX_CANDIDATES_PER_EXAM = 25
+ALL_PROJECTS_ID = "ALL"
+ALL_PROJECTS_NAME = "All Projects"
 
 
 def _serialize(document: dict) -> dict:
@@ -170,6 +172,15 @@ def _exam_payload(exam: dict) -> dict:
     exam_data["exam_id"] = exam_id
     exam_data["examinerid"] = examiner_id
     exam_data["examiner_id"] = examiner_id
+    project_id = exam.get("project_id") or exam.get("projectid")
+    project_name = exam.get("project_name") or exam.get("projectname") or exam.get("project_name_snapshot") or ""
+    exam_data["project_id"] = project_id
+    exam_data["projectid"] = project_id
+    is_global = bool(exam.get("is_global", exam.get("isglobal", project_id == ALL_PROJECTS_ID)))
+    exam_data["project_name"] = project_name
+    exam_data["projectname"] = project_name
+    exam_data["is_global"] = is_global
+    exam_data["isglobal"] = is_global
 
     exam_data["name"] = (
         exam.get("name")
@@ -340,6 +351,15 @@ def _assessment_payload(
 
     assessment_data["examinerid"] = examiner_id
     assessment_data["examiner_id"] = examiner_id
+    project_id = assessment.get("project_id") or assessment.get("projectid")
+    project_name = assessment.get("project_name") or assessment.get("projectname") or ""
+    assessment_data["project_id"] = project_id
+    assessment_data["projectid"] = project_id
+    is_global = bool(assessment.get("is_global", assessment.get("isglobal", project_id == ALL_PROJECTS_ID)))
+    assessment_data["project_name"] = project_name
+    assessment_data["projectname"] = project_name
+    assessment_data["is_global"] = is_global
+    assessment_data["isglobal"] = is_global
 
     assessment_data["allowedwebsites"] = (
         assessment.get(
@@ -415,6 +435,12 @@ def _merge_exam_assessment(
             assessment_data.get("examiner_id")
             or exam_data.get("examiner_id")
         ),
+        "project_id": assessment_data.get("project_id") or assessment_data.get("projectid") or exam_data.get("project_id") or exam_data.get("projectid"),
+        "projectid": assessment_data.get("projectid") or assessment_data.get("project_id") or exam_data.get("projectid") or exam_data.get("project_id"),
+        "project_name": assessment_data.get("project_name") or assessment_data.get("projectname") or exam_data.get("project_name") or exam_data.get("projectname") or "",
+        "projectname": assessment_data.get("projectname") or assessment_data.get("project_name") or exam_data.get("projectname") or exam_data.get("project_name") or "",
+        "is_global": bool(assessment_data.get("is_global") or assessment_data.get("isglobal") or exam_data.get("is_global") or exam_data.get("isglobal")),
+        "isglobal": bool(assessment_data.get("isglobal") or assessment_data.get("is_global") or exam_data.get("isglobal") or exam_data.get("is_global")),
         "name": exam_data.get("name"),
         "description": exam_data.get(
             "description",
@@ -543,6 +569,24 @@ async def create_exam(
         or current_user.get("userid")
     )
 
+    project_id = str(body.get("project_id") or body.get("projectid") or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="Select Project is required")
+    is_global_exam = project_id.upper() == ALL_PROJECTS_ID
+    project = None
+    if is_global_exam:
+        project_id = ALL_PROJECTS_ID
+        project_name = ALL_PROJECTS_NAME
+    else:
+        project = await db.projects.find_one({"$and": [{"$or": [{"project_id": project_id}, {"projectid": project_id}]}, {"is_active": True}, {"is_deleted": {"$ne": True}}]})
+        if not project:
+            raise HTTPException(status_code=404, detail="Selected project was not found")
+        if current_user.get("role") == "Examiner":
+            examiner_mapping = await db.project_user_mappings.find_one({"project_id": project_id, "user_id": str(examiner_id), "role": "Examiner", "is_active": True})
+            if not examiner_mapping:
+                raise HTTPException(status_code=403, detail="You are not mapped to the selected project")
+        project_name = project.get("project_name") or project.get("projectname") or ""
+
     name = str(
         body.get("name")
         or ""
@@ -634,6 +678,13 @@ async def create_exam(
         "exam_id": exam_id,
         "examid": exam_id,
         "name": name,
+        "project_id": project_id,
+        "projectid": project_id,
+        "project_name": project_name,
+        "projectname": project_name,
+        "project_name_snapshot": project_name,
+        "is_global": is_global_exam,
+        "isglobal": is_global_exam,
         "description": description,
         "examiner_id": examiner_id,
         "examinerid": examiner_id,
@@ -2013,6 +2064,15 @@ async def assign_candidates_bulk(
             detail="Select at least one candidate to assign.",
         )
 
+    exam_project_id = str(exam.get("project_id") or exam.get("projectid") or "").strip()
+    is_global_exam = exam_project_id == ALL_PROJECTS_ID or bool(exam.get("is_global", exam.get("isglobal", False)))
+    if exam_project_id and not is_global_exam:
+        eligible_rows = await db.project_user_mappings.find({"project_id": exam_project_id, "role": "Candidate", "is_active": True, "user_id": {"$in": candidate_ids}}).to_list(None)
+        eligible_ids = {str(row.get("user_id") or "") for row in eligible_rows}
+        ineligible_ids = [candidate_id for candidate_id in candidate_ids if candidate_id not in eligible_ids]
+        if ineligible_ids:
+            raise HTTPException(status_code=400, detail=f"Candidate(s) are not mapped to project {exam.get('project_name') or exam.get('projectname')}: " + ", ".join(ineligible_ids))
+
     assigned_documents = await db.assessments.find(
         {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]},
         {"_id": 0, "candidate_id": 1, "candidateid": 1},
@@ -2083,6 +2143,12 @@ async def assign_candidates_bulk(
             "assessmentid": assessment_id,
             "exam_id": exam_id,
             "examid": exam_id,
+            "project_id": exam_project_id or None,
+            "projectid": exam_project_id or None,
+            "project_name": exam.get("project_name") or exam.get("projectname") or "",
+            "projectname": exam.get("project_name") or exam.get("projectname") or "",
+            "is_global": is_global_exam,
+            "isglobal": is_global_exam,
             "candidate_id": candidate_id,
             "candidateid": candidate_id,
             "examiner_id": current_user_id,
@@ -2250,6 +2316,11 @@ async def assign_candidate(
             detail="Candidate already assigned",
         )
 
+    exam_project_id = str(exam.get("project_id") or exam.get("projectid") or "")
+    is_global_exam = exam_project_id == ALL_PROJECTS_ID or bool(exam.get("is_global", exam.get("isglobal", False)))
+    if exam_project_id and not is_global_exam and not await db.project_user_mappings.find_one({"project_id": exam_project_id, "user_id": candidate_id, "role": "Candidate", "is_active": True}):
+        raise HTTPException(status_code=400, detail=f"Candidate is not mapped to project {exam.get('project_name') or exam.get('projectname')}")
+
     assigned_documents = await db.assessments.find(
         {
             "$or": [
@@ -2293,6 +2364,12 @@ async def assign_candidate(
         "assessmentid": assessment_id,
         "exam_id": exam_id,
         "examid": exam_id,
+        "project_id": exam_project_id or None,
+        "projectid": exam_project_id or None,
+        "project_name": exam.get("project_name") or exam.get("projectname"),
+        "projectname": exam.get("project_name") or exam.get("projectname"),
+        "is_global": is_global_exam,
+        "isglobal": is_global_exam,
         "candidate_id": candidate_id,
         "candidateid": candidate_id,
         "examiner_id": current_user_id,

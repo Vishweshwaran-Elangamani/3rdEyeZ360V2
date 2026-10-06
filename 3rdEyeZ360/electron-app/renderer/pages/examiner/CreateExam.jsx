@@ -3,6 +3,7 @@ import axios from "axios";
 import useAuthStore from "../../store/authStore";
 
 const API = "http://localhost:3000";
+const ALL_PROJECTS_ID = "ALL";
 const THEME_STORAGE_KEY = "3rdeyez360.theme";
 
 /* ============= Theme system ============= */
@@ -958,6 +959,7 @@ function AnimatedBackground({ theme }) {
 /* ============= Date/time helpers ============= */
 
 const defaultForm = {
+  project_id: "",
   name: "",
   description: "",
   date: "",
@@ -1066,6 +1068,9 @@ export default function CreateExam({ onBack, onCreated }) {
 
   const { user, accessToken } = useAuthStore();
   const [form, setForm] = useState(defaultForm);
+  const [projects, setProjects] = useState([]);
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const projectDropdownRef = useRef(null);
   const [websiteInput, setWebsiteInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
@@ -1077,6 +1082,26 @@ export default function CreateExam({ onBack, onCreated }) {
   const saveInFlightRef = useRef(false);
 
   const headers = { Authorization: `Bearer ${accessToken}` };
+
+  useEffect(() => {
+    if (!accessToken) return;
+    axios.get(`${API}/api/projects/me`, { headers }).then((response) => setProjects(response.data || [])).catch(() => setProjects([]));
+  }, [accessToken]);
+  useEffect(() => {
+    if (!projectDropdownOpen) return undefined;
+    const closeOnOutside = (event) => {
+      if (!projectDropdownRef.current?.contains(event.target)) setProjectDropdownOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setProjectDropdownOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [projectDropdownOpen]);
 
   useEffect(() => {
     return () => {
@@ -1105,6 +1130,7 @@ export default function CreateExam({ onBack, onCreated }) {
 
   const validate = () => {
     const e = {};
+    if (!form.project_id) e.project_id = "Select Project is required";
     if (!form.name.trim()) e.name = "Exam name is required";
     if (form.exam_type === "MULTI_SESSION") {
       const frames = form.timeframes || [];
@@ -1499,6 +1525,92 @@ export default function CreateExam({ onBack, onCreated }) {
           {/* LEFT COLUMN — Basic info */}
           <SectionCard theme={theme} style={{ gridRow: "1 / 2", overflow: "visible", display: "flex", flexDirection: "column" }} title={<SectionHeading theme={theme}>Basic Information</SectionHeading>}>
             <div style={{ overflowY: "visible", paddingRight: 6, flex: 1, minHeight: 0 }}>
+              <Field label="Select Project *" error={errors.project_id} theme={theme} hint="Choose All Projects for a global assessment, or select one of your mapped projects.">
+                <div ref={projectDropdownRef} style={{ position: "relative", zIndex: 120 }}>
+                  <button
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded={projectDropdownOpen}
+                    onClick={() => setProjectDropdownOpen((open) => !open)}
+                    style={{
+                      ...inputStyle("project_id"),
+                      minHeight: 42,
+                      padding: "0 12px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      cursor: "pointer",
+                      opacity: 1,
+                      borderColor: projectDropdownOpen ? t.accent : errors.project_id ? t.danger : t.border,
+                      boxShadow: projectDropdownOpen ? `0 0 0 3px ${t.accentSoft}` : "none",
+                    }}
+                  >
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 9, minWidth: 0, color: form.project_id ? t.textPrimary : t.textMuted }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={form.project_id ? t.accent : t.textMuted} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2"/></svg>
+                      <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {form.project_id === ALL_PROJECTS_ID
+                          ? "All Projects"
+                          : projects.find((project) => String(project.project_id) === String(form.project_id))?.project_name || "Select Project"}
+                      </span>
+                    </span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transform: projectDropdownOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .22s ease" }}><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                  {projectDropdownOpen ? (
+                    <div role="listbox" aria-label="Select assessment project" style={{ position: "absolute", top: "calc(100% + 7px)", left: 0, right: 0, zIndex: 1400, maxHeight: 240, overflowY: "auto", padding: 6, borderRadius: 12, background: t.surfaceElevated, backdropFilter: "blur(22px)", WebkitBackdropFilter: "blur(22px)", border: `1px solid ${t.borderStrong}`, boxShadow: t.name === "dark" ? "0 22px 52px rgba(0,0,0,.58)" : "0 22px 52px rgba(20,28,60,.2)", animation: "pickerIn .2s ease" }}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={form.project_id === ALL_PROJECTS_ID}
+                        onClick={() => {
+                          set("project_id", ALL_PROJECTS_ID);
+                          setErrors((current) => ({ ...current, project_id: undefined }));
+                          setProjectDropdownOpen(false);
+                        }}
+                        style={{
+                          width: "100%",
+                          minHeight: 44,
+                          padding: "0 11px",
+                          marginBottom: 5,
+                          border: 0,
+                          borderRadius: 9,
+                          background: form.project_id === ALL_PROJECTS_ID ? t.accentSoft : "transparent",
+                          color: form.project_id === ALL_PROJECTS_ID ? t.accent : t.textSecondary,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          fontFamily: "'Inter', sans-serif",
+                          fontSize: 13,
+                          fontWeight: form.project_id === ALL_PROJECTS_ID ? 800 : 700,
+                        }}
+                        onMouseEnter={(event) => {
+                          if (form.project_id !== ALL_PROJECTS_ID) event.currentTarget.style.background = t.surfaceGlassHover;
+                        }}
+                        onMouseLeave={(event) => {
+                          if (form.project_id !== ALL_PROJECTS_ID) event.currentTarget.style.background = "transparent";
+                        }}
+                      >
+                        <span>
+                          <span style={{ display: "block" }}>All Projects</span>
+                          <span style={{ display: "block", marginTop: 2, color: t.textMuted, fontSize: 10.5, fontWeight: 500 }}>
+                            Candidates from any project can be assigned
+                          </span>
+                        </span>
+                        {form.project_id === ALL_PROJECTS_ID ? <span style={{ color: t.accent, fontSize: 15 }}>✓</span> : null}
+                      </button>
+                      <div style={{ height: 1, margin: "2px 5px 5px", background: t.border }} />
+                      {projects.map((project) => {
+                        const active = String(project.project_id) === String(form.project_id);
+                        return <button key={project.project_id} type="button" role="option" aria-selected={active} onClick={() => { set("project_id", project.project_id); setErrors((current) => ({ ...current, project_id: undefined })); setProjectDropdownOpen(false); }} style={{ width: "100%", minHeight: 40, padding: "0 11px", border: 0, borderRadius: 9, background: active ? t.accentSoft : "transparent", color: active ? t.accent : t.textSecondary, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, cursor: "pointer", textAlign: "left", fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: active ? 800 : 600 }} onMouseEnter={(event) => { if (!active) event.currentTarget.style.background = t.surfaceGlassHover; }} onMouseLeave={(event) => { if (!active) event.currentTarget.style.background = "transparent"; }}><span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project.project_name}</span>{active ? <span style={{ color: t.accent, fontSize: 15 }}>✓</span> : null}</button>;
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              </Field>
+
               <Field label="Exam Name *" error={errors.name} theme={theme}>
                 <input value={form.name} onChange={(e) => set("name", e.target.value)} onFocus={() => setFocusField("name")} onBlur={() => setFocusField("")} placeholder="e.g. Java Technical Assessment" style={inputStyle("name")} />
               </Field>

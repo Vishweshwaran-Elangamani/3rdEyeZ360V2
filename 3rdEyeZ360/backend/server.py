@@ -23,6 +23,7 @@ from routes.exam_routes import router as exam_router
 from routes.notification_routes import router as notification_router
 from routes.request_routes import router as request_router
 from routes.user_routes import router as user_router
+from routes.project_routes import router as project_router
 from routes.violation_routes import router as violation_router
 from sockets.monitoring_socket import sio
 
@@ -42,6 +43,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(user_router)
+app.include_router(project_router)
 app.include_router(exam_router)
 app.include_router(assessment_router)
 app.include_router(chat_router)
