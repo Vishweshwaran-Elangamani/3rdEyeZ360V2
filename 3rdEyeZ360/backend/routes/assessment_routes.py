@@ -204,6 +204,8 @@ async def _mark_reentry_required(db, assessment_id: str, reason: str, source: st
                 "interruption_source": source,
                 "exittime": now,
                 "exit_time": now,
+                "attendance_left_at": now,
+                "attendanceleftat": now,
                 "updatedat": now,
                 "updated_at": now,
             }
@@ -883,6 +885,8 @@ async def detect_assessment_activity(body: DetectionBody, current_user=Depends(r
                 "interruption_source": "VIOLATION_THRESHOLD",
                 "exittime": now,
                 "exit_time": now,
+                "attendance_left_at": now,
+                "attendanceleftat": now,
                 "updatedat": now,
                 "updated_at": now,
             }
@@ -1147,6 +1151,12 @@ async def enter_assessment(assessment_id: str, body: EnterAssessmentBody, curren
         "has_entered_exam": True,
         "enteredexamsession": int(exam.get("sessionnumber", exam.get("session_number", 1)) or 1),
         "entered_exam_session": int(exam.get("sessionnumber", exam.get("session_number", 1)) or 1),
+        "attendance_recorded": True,
+        "attendancerecorded": True,
+        "attendance_session_number": int(exam.get("sessionnumber", exam.get("session_number", 1)) or 1),
+        "attendancesessionnumber": int(exam.get("sessionnumber", exam.get("session_number", 1)) or 1),
+        "attended_session_number": int(exam.get("sessionnumber", exam.get("session_number", 1)) or 1),
+        "attendedsessionnumber": int(exam.get("sessionnumber", exam.get("session_number", 1)) or 1),
         "requiresreentryapproval": False,
         "requires_reentry_approval": False,
         "reentryapprovalconsumed": has_entered,
@@ -1172,6 +1182,9 @@ async def enter_assessment(assessment_id: str, body: EnterAssessmentBody, curren
     if not (assessment.get("activetime") or assessment.get("active_time")):
         update["activetime"] = now
         update["active_time"] = now
+    if not (assessment.get("attendance_joined_at") or assessment.get("attendancejoinedat")):
+        update["attendance_joined_at"] = now
+        update["attendancejoinedat"] = now
     if has_entered:
         update["reentrycount"] = count + 1
         update["re_entry_count"] = count + 1
@@ -1335,7 +1348,7 @@ async def assessment_action(assessment_id: str, body: dict, current_user=Depends
     if action == "terminate":
         if current_status in {"TERMINATED", "COMPLETED", "LOCKED"} or is_assessment_finalized(assessment):
             raise HTTPException(status_code=409, detail="Finalized assessment cannot be modified")
-        update.update({"status": "TERMINATED", "assessmentstatus": "TERMINATED", "assessment_status": "TERMINATED", "finalstatus": "TERMINATED", "final_status": "TERMINATED", "isfinalized": True, "is_finalized": True, "finalizedreason": "EXAMINER_TERMINATED", "finalized_reason": "EXAMINER_TERMINATED", "finalizedat": now, "finalized_at": now, "activesessionid": None, "active_session_id": None, "waitingsessionid": None, "waiting_session_id": None, "exittime": now, "exit_time": now})
+        update.update({"status": "TERMINATED", "assessmentstatus": "TERMINATED", "assessment_status": "TERMINATED", "finalstatus": "TERMINATED", "final_status": "TERMINATED", "isfinalized": True, "is_finalized": True, "finalizedreason": "EXAMINER_TERMINATED", "finalized_reason": "EXAMINER_TERMINATED", "finalizedat": now, "finalized_at": now, "activesessionid": None, "active_session_id": None, "waitingsessionid": None, "waiting_session_id": None, "exittime": now, "exit_time": now, "attendance_left_at": now, "attendanceleftat": now})
     elif action == "pause":
         if current_status == "PAUSED":
             raise HTTPException(status_code=409, detail="Assessment is already paused")

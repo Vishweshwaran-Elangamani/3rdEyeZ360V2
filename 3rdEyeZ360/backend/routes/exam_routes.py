@@ -1219,7 +1219,6 @@ async def start_exam(
                 "reentryapprovalconsumed": False, "reentry_approval_consumed": False,
                 "activesessionid": None, "active_session_id": None,
                 "lastheartbeatat": None, "last_heartbeat_at": None,
-                "enteredexamsession": None, "entered_exam_session": None,
                 "updatedat": now, "updated_at": now,
             }}
         )
@@ -1260,7 +1259,9 @@ async def _end_exam_run(db, exam: dict, exam_id: str, actor_id: str, automatic: 
             "finalizedat": now, "finalized_at": now,
             "activesessionid": None, "active_session_id": None,
             "waitingsessionid": None, "waiting_session_id": None,
-            "exit_time": now, "exittime": now, "updated_at": now, "updatedat": now,
+            "exit_time": now, "exittime": now,
+            "attendance_left_at": now, "attendanceleftat": now,
+            "updated_at": now, "updatedat": now,
         }})
     await db.audit_logs.insert_one({
         "log_id": f"AUD-{uuid.uuid4().hex[:8].upper()}", "user_id": actor_id, "userid": actor_id,
@@ -1648,23 +1649,144 @@ async def get_exam_attendance(exam_id: str, current_user=Depends(require_role("E
     exam = await _ensure_exam_access(db, exam_id, current_user)
     query = {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]}
     assessments = await db.assessments.find(query).to_list(None)
-    candidate_ids = [str(a.get("candidate_id") or a.get("candidateid") or "") for a in assessments]
+    candidate_ids = [str(item.get("candidate_id") or item.get("candidateid") or "") for item in assessments]
     users = await db.users.find({"$or": [{"user_id": {"$in": candidate_ids}}, {"userid": {"$in": candidate_ids}}]}).to_list(None) if candidate_ids else []
-    users_by_id = {str(u.get("user_id") or u.get("userid") or ""): u for u in users}
+    users_by_id = {str(user.get("user_id") or user.get("userid") or ""): user for user in users}
+
     frames = exam.get("timeframes") or exam.get("flexibleintervals") or exam.get("flexible_intervals") or []
     multi = is_multi_session_exam(exam)
-    count = max(1, len(frames) if multi else 1)
-    sessions = [{"session_number": n, "session_name": f"Session {n}", "timeframe": frames[n-1] if n <= len(frames) else None, "attended_count": 0, "attended_candidates": []} for n in range(1, count + 1)]
-    never = []
-    for a in assessments:
-        cid = str(a.get("candidate_id") or a.get("candidateid") or "")
-        user = users_by_id.get(cid, {})
-        entered_number = int(a.get("enteredexamsession") or a.get("entered_exam_session") or 0)
-        attended = bool(a.get("hasenteredexam", a.get("has_entered_exam", False)) and 1 <= entered_number <= count)
-        row = {"assessment_id": a.get("assessment_id") or a.get("assessmentid"), "candidate_id": cid, "candidate_name": user.get("name") or cid, "candidate_email": user.get("email") or "", "status": _normalize_status(a.get("finalstatus") or a.get("final_status") or a.get("assessmentstatus") or a.get("assessment_status") or a.get("status"), "ASSIGNED"), "attended": attended, "session_number": entered_number if attended else None, "joined_at": a.get("activetime") or a.get("active_time"), "left_at": a.get("exittime") or a.get("exit_time") or a.get("finalizedat") or a.get("finalized_at")}
-        (sessions[entered_number-1]["attended_candidates"] if attended else never).append(row)
-    for session in sessions: session["attended_count"] = len(session["attended_candidates"])
-    return {"exam_id": exam_id, "exam_type": "MULTI_SESSION" if multi else "SINGLE_SESSION", "total_assigned": len(assessments), "total_attended": sum(x["attended_count"] for x in sessions), "never_attended_count": len(never), "sessions": sessions, "never_attended_candidates": never}
+    session_count = max(1, len(frames) if multi else 1)
+    sessions = [
+        {
+            "session_number": number,
+            "session_name": f"Session {number}",
+            "timeframe": frames[number - 1] if number <= len(frames) else None,
+            "attended_count": 0,
+            "attended_candidates": [],
+        }
+        for number in range(1, session_count + 1)
+    ]
+
+    # Historical recovery for records created before immutable attendance fields.
+    start_logs = await db.audit_logs.find({
+        "$and": [
+            {"$or": [{"exam_id": exam_id}, {"examid": exam_id}]},
+            {"action": {"$in": ["StartExam", "StartNextSession"]}},
+        ]
+    }).sort("timestamp", 1).to_list(None)
+    session_starts = [
+        (min(index, session_count), row.get("timestamp"))
+        for index, row in enumerate(start_logs, start=1)
+        if isinstance(row.get("timestamp"), datetime)
+    ]
+
+    def saved_session_number(document: dict) -> int:
+        for key in (
+            "attendance_session_number", "attendancesessionnumber",
+            "attended_session_number", "attendedsessionnumber",
+            "enteredexamsession", "entered_exam_session",
+        ):
+            value = document.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= number <= session_count:
+                return number
+        return 0
+
+    def infer_session_number(document: dict, joined_at) -> int:
+        number = saved_session_number(document)
+        if number:
+            return number
+        if isinstance(joined_at, datetime):
+            candidates = [number for number, started_at in session_starts if started_at <= joined_at]
+            if candidates:
+                return candidates[-1]
+            current = int(exam.get("sessionnumber", exam.get("session_number", 0)) or 0)
+            if 1 <= current <= session_count:
+                return current
+            if session_count == 1:
+                return 1
+        return 0
+
+    never_attended = []
+    for assessment in assessments:
+        candidate_id = str(assessment.get("candidate_id") or assessment.get("candidateid") or "")
+        user = users_by_id.get(candidate_id, {})
+        joined_at = (
+            assessment.get("attendance_joined_at")
+            or assessment.get("attendancejoinedat")
+            or assessment.get("activetime")
+            or assessment.get("active_time")
+        )
+        left_at = (
+            assessment.get("attendance_left_at")
+            or assessment.get("attendanceleftat")
+            or assessment.get("exittime")
+            or assessment.get("exit_time")
+            or assessment.get("finalizedat")
+            or assessment.get("finalized_at")
+        )
+        session_number = infer_session_number(assessment, joined_at)
+        attended = bool(joined_at and 1 <= session_number <= session_count)
+
+        if attended and not saved_session_number(assessment):
+            await db.assessments.update_one(
+                {"_id": assessment["_id"]},
+                {"$set": {
+                    "attendance_recorded": True,
+                    "attendancerecorded": True,
+                    "attendance_session_number": session_number,
+                    "attendancesessionnumber": session_number,
+                    "attended_session_number": session_number,
+                    "attendedsessionnumber": session_number,
+                    "enteredexamsession": session_number,
+                    "entered_exam_session": session_number,
+                    "attendance_joined_at": joined_at,
+                    "attendancejoinedat": joined_at,
+                    "attendance_left_at": left_at,
+                    "attendanceleftat": left_at,
+                }},
+            )
+
+        row = {
+            "assessment_id": assessment.get("assessment_id") or assessment.get("assessmentid"),
+            "candidate_id": candidate_id,
+            "candidate_name": user.get("name") or candidate_id,
+            "candidate_email": user.get("email") or "",
+            "status": _normalize_status(
+                assessment.get("finalstatus")
+                or assessment.get("final_status")
+                or assessment.get("assessmentstatus")
+                or assessment.get("assessment_status")
+                or assessment.get("status"),
+                "ASSIGNED",
+            ),
+            "attended": attended,
+            "session_number": session_number if attended else None,
+            "joined_at": joined_at,
+            "left_at": left_at,
+        }
+        if attended:
+            sessions[session_number - 1]["attended_candidates"].append(row)
+        else:
+            never_attended.append(row)
+
+    for session in sessions:
+        session["attended_count"] = len(session["attended_candidates"])
+
+    return {
+        "exam_id": exam_id,
+        "exam_type": "MULTI_SESSION" if multi else "SINGLE_SESSION",
+        "total_assigned": len(assessments),
+        "total_attended": sum(item["attended_count"] for item in sessions),
+        "never_attended_count": len(never_attended),
+        "sessions": sessions,
+        "never_attended_candidates": never_attended,
+    }
 
 @router.get("/{exam_id}/assessments")
 async def get_exam_assessments(
