@@ -316,6 +316,21 @@ async def emit_assessment_event(event, assessment):
         await sio.emit(event, payload, room=f"examiner_{examiner_id}")
     await sio.emit(event, payload, room="admins")
 
+async def emit_violation_event(event, violation, assessment=None):
+    payload = _normalized_socket_payload(violation)
+    if assessment:
+        payload["assessment"] = _normalized_socket_payload(assessment)
+    exam_id = payload.get("examid")
+    candidate_id = payload.get("candidateid")
+    examiner_id = (assessment or {}).get("examinerid") or (assessment or {}).get("examiner_id")
+    if exam_id:
+        await sio.emit(event, payload, room=f"exam_{exam_id}_examiners")
+    if examiner_id:
+        await sio.emit(event, payload, room=f"examiner_{examiner_id}")
+    if candidate_id:
+        await sio.emit(event, payload, room=f"candidate_{candidate_id}")
+    await sio.emit(event, payload, room="admins")
+
 async def emit_request_event(event, request_payload, assessment=None):
     payload = _normalized_socket_payload(request_payload)
     if assessment:

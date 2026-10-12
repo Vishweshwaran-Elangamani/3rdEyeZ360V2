@@ -7,6 +7,8 @@ from config.database import get_db
 from middleware.auth import require_role
 from services.evidence_service import get_evidence_base64
 from services.assessment_service import log_audit
+from services.violation_service import dismiss_violation
+from sockets.monitoring_socket import emit_violation_event
 
 router = APIRouter(prefix="/api/violations", tags=["Violations"])
 
@@ -223,7 +225,7 @@ async def get_candidate_violation_summary(
     await _ensure_assessment_access(db, assessment, current_user)
 
     violations = (
-        await db.violations.find(_assessment_query(assessment_id))
+        await db.violations.find({"$and": [_assessment_query(assessment_id), {"status": {"$ne": "DISMISSED"}}]})
         .sort(_created_sort())
         .to_list(None)
     )
@@ -486,37 +488,41 @@ async def review_violation(
     violation = await db.violations.find_one(_violation_query(violation_id))
     if not violation:
         raise HTTPException(status_code=404, detail="Violation not found")
-
     exam_id = violation.get("exam_id") or violation.get("examid")
     await _ensure_exam_access(db, exam_id, current_user)
-
-    note = str(body.get("note") or body.get("review_note") or "").strip()
-    status = str(body.get("status") or "Reviewed").strip()
-    now = datetime.utcnow()
+    requested_status = str(body.get("status") or "Reviewed").strip().upper()
+    if requested_status != "DISMISSED":
+        raise HTTPException(status_code=400, detail="Only DISMISSED review status is supported")
+    reason = str(body.get("reason") or body.get("note") or body.get("review_note") or "False positive").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Dismissal reason is required")
     user_id = _user_id(current_user)
-
-    await db.violations.update_one(
-        _violation_query(violation_id),
-        {
-            "$set": {
-                "reviewed": True,
-                "reviewedby": user_id,
-                "reviewed_by": user_id,
-                "reviewnote": note,
-                "review_note": note,
-                "reviewedat": now,
-                "reviewed_at": now,
-                "status": status,
-            }
-        },
+    updated, assessment, result = await dismiss_violation(violation_id, user_id, reason)
+    if result == "ALREADY_DISMISSED":
+        raise HTTPException(status_code=409, detail="Violation has already been dismissed")
+    if result == "NOT_FOUND" or not updated:
+        raise HTTPException(status_code=404, detail="Violation not found")
+    candidate_id = updated.get("candidate_id") or updated.get("candidateid")
+    assessment_id = updated.get("assessment_id") or updated.get("assessmentid")
+    await log_audit(
+        user_id,
+        "DismissViolation",
+        reason,
+        exam_id,
+        assessment_id,
+        f"violation_id={violation_id}",
+        candidate_id,
+        {"violation_id": violation_id, "reason": reason},
     )
-
-    updated = await db.violations.find_one(_violation_query(violation_id))
+    normalized = _normalize_violation(updated)
+    await emit_violation_event("violation_dismissed", normalized, assessment)
     return {
-        "message": "Violation reviewed",
-        "violation": _normalize_violation(updated),
+        "message": "Violation dismissed",
+        "violation": normalized,
+        "assessment": _serialize(assessment),
+        "violationcount": int((assessment or {}).get("violationcount", (assessment or {}).get("violation_count", 0)) or 0),
+        "violation_count": int((assessment or {}).get("violation_count", (assessment or {}).get("violationcount", 0)) or 0),
     }
-
 
 @router.get("/{exam_id}/{candidate_id}/events")
 async def get_monitoring_events(

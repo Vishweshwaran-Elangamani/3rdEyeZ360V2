@@ -933,7 +933,7 @@ const UserListRow = React.memo(function UserListRow({
           disabled={saving}
           style={{ padding: "7px 12px", fontSize: 11.5, color: t.accent }}
         >
-          {saving ? "Sending..." : "Send email"}
+          {saving ? "Sending..." : "Invite"}
         </GhostButton>
       </div>
     </div>

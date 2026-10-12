@@ -1894,15 +1894,24 @@ setPauseLocked(false);
       }
     };
 
+      const onViolationDismissed = async (payload) => {
+        const payloadAssessmentId = pick(payload?.assessmentid, payload?.assessment_id, payload?.assessment?.assessmentid, payload?.assessment?.assessment_id);
+        if (payloadAssessmentId && String(payloadAssessmentId) !== String(assessmentId)) return;
+        await loadCandidateViolations({ silent: true });
+        if (payload?.assessment) await onAssessmentUpdated(payload.assessment);
+        setStatusMsg("A reviewed violation was dismissed and your violation count was updated.");
+      };
     socket.on("exam_updated", onExamUpdated);
     socket.on("assessment_updated", onAssessmentUpdated);
+    socket.on("violation_dismissed", onViolationDismissed);
     socket.on("request_reviewed", onAssessmentUpdated);
     return () => {
       socket.off("exam_updated", onExamUpdated);
       socket.off("assessment_updated", onAssessmentUpdated);
+      socket.off("violation_dismissed", onViolationDismissed);
       socket.off("request_reviewed", onAssessmentUpdated);
     };
-  }, [socket, examId, assessmentId, finishExam, hideBrowserForPause, showBrowserForActiveState, presentViolationRemoval]);
+  }, [socket, examId, assessmentId, finishExam, hideBrowserForPause, showBrowserForActiveState, presentViolationRemoval, loadCandidateViolations]);
   const baseDurationMinutes = Number(merged.durationminutes || normalizedExam?.durationminutes || 0);
   const extensionMinutes = Number(pick(liveExam?.timeextensionminutes, liveExam?.time_extension_minutes, normalizedExam?.timeextensionminutes, 0) || 0);
   const durationMinutes = Math.max(0, baseDurationMinutes + extensionMinutes);

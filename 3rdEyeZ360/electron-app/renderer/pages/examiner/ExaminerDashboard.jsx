@@ -2565,6 +2565,9 @@ export default function ExaminerDashboard() {
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [evidenceError, setEvidenceError] = useState("");
   const [selectedEvidence, setSelectedEvidence] = useState(null);
+  const [dismissViolationModal, setDismissViolationModal] = useState(null);
+  const [dismissViolationReason, setDismissViolationReason] = useState("False positive");
+  const [dismissingViolationId, setDismissingViolationId] = useState(null);
   const [broadcastMsg, setBroadcastMsg] = useState("");
   const [loadingExams, setLoadingExams] = useState(false);
   const [startingExam, setStartingExam] = useState(false);
@@ -2775,9 +2778,9 @@ export default function ExaminerDashboard() {
 
   const loadAttendance = useCallback(async (examId) => { if (!examId) return; setAttendanceLoading(true); setAttendanceError(""); try { const response = await axios.get(`${API}/api/exams/${examId}/attendance`, { headers }); setAttendanceData(response.data || null); } catch (error) { setAttendanceError(error?.response?.data?.detail || error?.message || "Attendance could not be loaded."); } finally { setAttendanceLoading(false); } }, [headers]);
   const loadMonitoringEvents = useCallback(
-    async (candidateId, examId) => {
+    async (candidateId, examId, { silent = false } = {}) => {
       if (!candidateId || !examId) return null;
-      setEventsLoading(true);
+      if (!silent) setEventsLoading(true);
       try {
         const res = await axios.get(
           `${API}/api/violations/${examId}/${candidateId}/events`,
@@ -2839,7 +2842,7 @@ export default function ExaminerDashboard() {
         setViolations([]);
         return null;
       } finally {
-        setEventsLoading(false);
+        if (!silent) setEventsLoading(false);
       }
     },
     [headers],
@@ -2879,6 +2882,35 @@ export default function ExaminerDashboard() {
     },
     [headers],
   );
+
+  const dismissViolation = useCallback(async () => {
+    const violation = dismissViolationModal;
+    const violationId = violation?.violationid ?? violation?.violation_id;
+    if (!violationId || !dismissViolationReason.trim()) return;
+    setDismissingViolationId(violationId);
+    try {
+      const response = await axios.patch(
+        `${API}/api/violations/${violationId}/review`,
+        { status: "DISMISSED", reason: dismissViolationReason.trim() },
+        { headers },
+      );
+      const assessment = normalizeCandidate(response.data?.assessment || {});
+      if (assessment?.assessmentid) {
+        setCandidates((current) => current.map((item) => item.assessmentid === assessment.assessmentid ? { ...item, ...assessment, candidatename: item.candidatename, candidateemail: item.candidateemail } : item));
+        setSelectedCandidate((current) => current?.assessmentid === assessment.assessmentid ? { ...current, ...assessment, candidatename: current.candidatename, candidateemail: current.candidateemail } : current);
+      }
+      if (selectedCandidate?.candidateid) await loadMonitoringEvents(selectedCandidate.candidateid, selectedExamId);
+      setDismissViolationModal(null);
+      setDismissViolationReason("False positive");
+      setActionMsg("Violation dismissed and candidate count updated");
+      window.setTimeout(() => setActionMsg(""), 4000);
+    } catch (error) {
+      setActionMsg(error?.response?.data?.detail || error?.message || "Violation could not be dismissed");
+      window.setTimeout(() => setActionMsg(""), 4500);
+    } finally {
+      setDismissingViolationId(null);
+    }
+  }, [dismissViolationModal, dismissViolationReason, headers, loadMonitoringEvents, selectedCandidate?.candidateid, selectedExamId]);
 
   const openReportViolationEvidence = useCallback(async (violation, candidateRow) => {
     const violationId = violation?.violationid ?? violation?.violation_id;
@@ -3102,6 +3134,14 @@ export default function ExaminerDashboard() {
       }
     };
 
+      const onViolationDismissed = (payload) => {
+        const candidateId = payload?.candidateid ?? payload?.candidate_id;
+        const assessment = payload?.assessment;
+        if (assessment) onAssessmentUpdated(assessment);
+        if (candidateId && String(selectedCandidate?.candidateid || "") === String(candidateId)) {
+          void loadMonitoringEvents(candidateId, selectedExamId);
+        }
+      };
     const joinSelectedExamRoom = () => {
       if (!socket.connected || view !== "monitor" || !selectedExamId) return;
       socket.emit("join_exam", { examid: selectedExamId, role: "Examiner" });
@@ -3132,6 +3172,8 @@ export default function ExaminerDashboard() {
     socket.on("request_created", onRequestCreated);
     socket.on("request_reviewed", onRequestReviewed);
     socket.on("violation_alert", onViolationAlert);
+    socket.on("violationalert", onViolationAlert);
+    socket.on("violation_dismissed", onViolationDismissed);
 
     return () => {
       socket.off("connect", handleReconnect);
@@ -3144,6 +3186,8 @@ export default function ExaminerDashboard() {
       socket.off("request_created", onRequestCreated);
       socket.off("request_reviewed", onRequestReviewed);
       socket.off("violation_alert", onViolationAlert);
+      socket.off("violationalert", onViolationAlert);
+      socket.off("violation_dismissed", onViolationDismissed);
     };
   }, [
     socket,
@@ -3230,6 +3274,17 @@ export default function ExaminerDashboard() {
     chatOpen,
     selectedCandidate?.candidateid,
   ]);
+
+  useEffect(() => {
+    if (view !== "monitor" || monitorTab !== "grid" || !selectedExamId || !selectedCandidate?.candidateid) return undefined;
+    const candidateId = selectedCandidate.candidateid;
+    const syncMonitoringEvents = () => {
+      void loadMonitoringEvents(candidateId, selectedExamId, { silent: true });
+    };
+    syncMonitoringEvents();
+    const timer = window.setInterval(syncMonitoringEvents, 1000);
+    return () => window.clearInterval(timer);
+  }, [view, monitorTab, selectedExamId, selectedCandidate?.candidateid, loadMonitoringEvents]);
 
   useEffect(() => {
     if (!chatOpen || !selectedCandidate?.candidateid) return;
@@ -5993,8 +6048,9 @@ export default function ExaminerDashboard() {
                       <div style={{ display: "grid", gap: 10 }}>
                         {selectedCandidateEvents.map((event, index) => {
                           const isWarning = candidateEventTab === "warnings";
-                          const color = isWarning ? t.warning : t.danger;
-                          const label = isWarning ? "Warning" : "Violation";
+                          const isDismissed = !isWarning && String(event.status || "").toUpperCase() === "DISMISSED";
+                          const color = isDismissed ? t.success : isWarning ? t.warning : t.danger;
+                          const label = isDismissed ? "Dismissed" : isWarning ? "Warning" : "Violation";
                           const detail = String(
                             event.detail ??
                               event.type ??
@@ -6140,6 +6196,16 @@ export default function ExaminerDashboard() {
                                   View captured evidence
                                 </button>
                               ) : null}
+                              {!isWarning ? (
+                                  <button
+                                    type="button"
+                                    disabled={isDismissed || dismissingViolationId === (event.violationid ?? event.violation_id)}
+                                    onClick={() => { setDismissViolationReason("False positive"); setDismissViolationModal(event); }}
+                                    style={{ marginTop: 8, width: "100%", minHeight: 36, borderRadius: 9, border: `1px solid ${isDismissed ? t.success : t.accent}66`, background: isDismissed ? t.successBg : t.accentSoft, color: isDismissed ? t.success : t.accent, cursor: isDismissed ? "not-allowed" : "pointer", fontSize: 11, fontWeight: 800, opacity: isDismissed ? 0.85 : 1 }}
+                                  >
+                                    {isDismissed ? "Dismissed as false positive" : "Dismiss violation"}
+                                  </button>
+                                ) : null}
                             </div>
                           );
                         })}
@@ -6282,6 +6348,19 @@ export default function ExaminerDashboard() {
           }
         />
 
+        <ReasonModal
+          open={!!dismissViolationModal}
+          theme={theme}
+          title="Dismiss violation"
+          actionLabel="Dismiss violation"
+          actionGradient={t.successGradient}
+          actionGlow={t.glowSuccess}
+          reason={dismissViolationReason}
+          onChange={setDismissViolationReason}
+          onCancel={() => { if (!dismissingViolationId) { setDismissViolationModal(null); setDismissViolationReason("False positive"); } }}
+          onConfirm={dismissViolation}
+          working={Boolean(dismissingViolationId)}
+        />
         <EvidenceModal
           open={evidenceModalOpen}
           theme={theme}

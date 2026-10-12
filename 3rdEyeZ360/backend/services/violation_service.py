@@ -204,3 +204,72 @@ async def get_warning_count(assessment_id: str, detail: str) -> int:
     db = get_db()
     result = await db.warnings.find_one({"assessment_id": assessment_id, "detail": detail})
     return result["count"] if result else 0
+
+async def dismiss_violation(violation_id: str, examiner_id: str, reason: str = "False positive"):
+    db = get_db()
+    violation_query = {"$or": [{"violation_id": violation_id}, {"violationid": violation_id}]}
+    violation = await db.violations.find_one(violation_query)
+    if not violation:
+        return None, None, "NOT_FOUND"
+    if str(violation.get("status") or "").strip().upper() == "DISMISSED":
+        assessment_id = violation.get("assessment_id") or violation.get("assessmentid")
+        assessment = await db.assessments.find_one({"$or": [{"assessment_id": assessment_id}, {"assessmentid": assessment_id}]})
+        return violation, assessment, "ALREADY_DISMISSED"
+    now = datetime.utcnow()
+    result = await db.violations.update_one(
+        {"$and": [violation_query, {"status": {"$ne": "DISMISSED"}}]},
+        {"$set": {
+            "status": "DISMISSED",
+            "reviewed": True,
+            "reviewedby": examiner_id,
+            "reviewed_by": examiner_id,
+            "reviewnote": reason,
+            "review_note": reason,
+            "reviewedat": now,
+            "reviewed_at": now,
+            "dismissedby": examiner_id,
+            "dismissed_by": examiner_id,
+            "dismissedat": now,
+            "dismissed_at": now,
+            "dismissalreason": reason,
+            "dismissal_reason": reason,
+        }},
+    )
+    if result.modified_count != 1:
+        latest = await db.violations.find_one(violation_query)
+        assessment_id = (latest or violation).get("assessment_id") or (latest or violation).get("assessmentid")
+        assessment = await db.assessments.find_one({"$or": [{"assessment_id": assessment_id}, {"assessmentid": assessment_id}]})
+        return latest or violation, assessment, "ALREADY_DISMISSED"
+    updated_violation = await db.violations.find_one(violation_query)
+    assessment_id = updated_violation.get("assessment_id") or updated_violation.get("assessmentid")
+    assessment_query = {"$or": [{"assessment_id": assessment_id}, {"assessmentid": assessment_id}]}
+    active_query = {"$and": [assessment_query, {"status": {"$ne": "DISMISSED"}}]}
+    active_violations = await db.violations.find(active_query).to_list(None)
+    violation_count = len(active_violations)
+    risk_score = sum(max(0, int(item.get("risk_score", item.get("riskscore", 0)) or 0)) for item in active_violations)
+    assessment = await db.assessments.find_one(assessment_query) or {}
+    threshold = int(assessment.get("violation_threshold", assessment.get("violationthreshold", 10)) or 10)
+    update = {
+        "violation_count": violation_count, "violationcount": violation_count,
+        "risk_score": risk_score, "riskscore": risk_score,
+        "credibility_score": max(0, min(100, 100 - risk_score)),
+        "credibilityscore": max(0, min(100, 100 - risk_score)),
+        "threshold_reached": violation_count >= threshold,
+        "thresholdreached": violation_count >= threshold,
+        "updated_at": now, "updatedat": now,
+    }
+    if violation_count < max(1, threshold - 1):
+        update.update({
+            "final_violation_warning_issued": False,
+            "violation_grace_until": None,
+        })
+    current_status = str(assessment.get("status") or assessment.get("assessment_status") or "").upper()
+    if current_status == "LOCKED" and violation_count < threshold:
+        update.update({
+            "status": "ACTIVE", "assessment_status": "ACTIVE", "assessmentstatus": "ACTIVE",
+            "final_status": None, "finalstatus": None,
+            "requires_reentry_approval": False, "requiresreentryapproval": False,
+        })
+    await db.assessments.update_one(assessment_query, {"$set": update})
+    assessment = await db.assessments.find_one(assessment_query)
+    return updated_violation, assessment, "DISMISSED"
