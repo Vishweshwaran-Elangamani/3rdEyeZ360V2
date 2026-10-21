@@ -664,6 +664,38 @@ function formatViolationTime(value) {
   const timestamp = parseServerDateMs(value);
   return timestamp > 0 ? new Date(timestamp).toLocaleString() : "—";
 }
+function findIdentityContinuitySignal(payload) {
+  const queue = [payload];
+  const visited = new Set();
+  while (queue.length) {
+    const value = queue.shift();
+    if (!value || typeof value !== "object" || visited.has(value)) continue;
+    visited.add(value);
+    const type = String(pick(value.type, value.detector, value.category, value.violationtype, value.violation_type, "")).toLowerCase();
+    const detail = String(pick(value.detail, value.issue, value.reason, value.violationdetail, value.violation_detail, "")).toLowerCase();
+    const decision = String(pick(value.identity_decision, value.identityDecision, value.continuity_decision, value.decision, "")).toUpperCase();
+    const identityRelated = type.includes("identity") || type.includes("continuity") || detail.includes("different_person") || detail.includes("identity_mismatch") || ["DIFFERENT_PERSON", "CONTINUITY_REVIEW_REQUIRED", "SAME_PERSON"].includes(decision);
+    if (identityRelated) {
+      const mismatch = decision === "DIFFERENT_PERSON" || decision === "CONTINUITY_REVIEW_REQUIRED" || detail.includes("different_person") || detail.includes("identity_mismatch");
+      const samePerson = decision === "SAME_PERSON" || detail === "same_person";
+      if (mismatch || samePerson) {
+        return {
+          mismatch,
+          samePerson,
+          decision: decision || (mismatch ? "DIFFERENT_PERSON" : "SAME_PERSON"),
+          similarity: pick(value.identity_similarity, value.identitySimilarity, value.similarity),
+          message: pick(value.message, value.warningmessage, value.warning_message, mismatch ? "The person currently visible does not match the validated PreCheck reference photo." : "The registered candidate is visible again."),
+        };
+      }
+    }
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) queue.push(...child);
+      else if (child && typeof child === "object") queue.push(child);
+    }
+  }
+  return null;
+}
+
 /* ============= Status chip ============= */
 
 function StatusChip({ status, theme, label }) {
@@ -721,7 +753,14 @@ function StatusChip({ status, theme, label }) {
 
 /* ============= Main ============= */
 
-export default function ActiveExam({ exam, assessment, onComplete, onLogout, onReturnToDashboard }) {
+export default function ActiveExam({
+  exam,
+  assessment,
+  precheckArtifacts = null,
+  onComplete,
+  onLogout,
+  onReturnToDashboard,
+}) {
   const { theme, toggleTheme } = useTheme();
   const t = THEMES[theme];
 
@@ -773,6 +812,65 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
 
   const normalizedExam = useMemo(() => normalizeExam(exam), [exam]);
   const normalizedAssessment = useMemo(() => normalizeAssessment(assessment), [assessment]);
+  const precheckMetadata = useMemo(() => {
+    const reference = precheckArtifacts?.identityReference || {};
+    const referenceId =
+      reference.referenceId ||
+      reference.reference_id ||
+      precheckArtifacts?.referenceId ||
+      precheckArtifacts?.reference_id ||
+      null;
+    const referenceObject =
+      reference.referenceObject ||
+      reference.reference_object ||
+      reference.evidenceObject ||
+      reference.evidence_object ||
+      precheckArtifacts?.referenceObject ||
+      precheckArtifacts?.reference_object ||
+      null;
+    const referenceBucket =
+      reference.referenceBucket ||
+      reference.reference_bucket ||
+      reference.evidenceBucket ||
+      reference.evidence_bucket ||
+      precheckArtifacts?.referenceBucket ||
+      precheckArtifacts?.reference_bucket ||
+      null;
+    const status = String(
+      reference.status ||
+        reference.referenceStatus ||
+        reference.reference_status ||
+        precheckArtifacts?.identityReferenceStatus ||
+        precheckArtifacts?.identity_reference_status ||
+        "",
+    ).toUpperCase();
+
+    return {
+      completed: Boolean(
+        status === "VALIDATED" && referenceId && referenceObject,
+      ),
+      status,
+      referenceId,
+      referenceObject,
+      referenceBucket,
+      photoCapturedAt:
+        reference.photoCapturedAt ||
+        reference.photo_captured_at ||
+        precheckArtifacts?.photoCapturedAt ||
+        null,
+      validation:
+        reference.validation ||
+        precheckArtifacts?.identityReferenceValidation ||
+        null,
+      voiceRecordedAt: precheckArtifacts?.voiceRecordedAt || null,
+      voiceSampleMimeType: precheckArtifacts?.voiceSampleMimeType || null,
+      voiceValidationBypassed: Boolean(
+        precheckArtifacts?.voiceValidationBypassed ||
+          precheckArtifacts?.voice_validation_bypassed,
+      ),
+      temporary: precheckArtifacts?.temporary === true,
+    };
+  }, [precheckArtifacts]);
 
   const [liveExam, setLiveExam] = useState(normalizedExam);
   const [liveAssessment, setLiveAssessment] = useState(normalizedAssessment);
@@ -792,6 +890,8 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
   const [violationsError, setViolationsError] = useState("");
   const [progressiveWarning, setProgressiveWarning] = useState(null);
   const [warningSecondsLeft, setWarningSecondsLeft] = useState(0);
+  const [identityBlocked, setIdentityBlocked] = useState(false);
+  const [identityBlockDetails, setIdentityBlockDetails] = useState(null);
   const fiveMinuteAlertShownRef = useRef(false);
   const [pauseLocked, setPauseLocked] = useState(
     canonicalStatus(normalizedAssessment?.status) === "PAUSED"
@@ -866,7 +966,22 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
         token: accessToken,
         sessionId: sessionIdRef.current,
         monitoringMode: "full",
+        monitoring_mode: "full",
         reason,
+        // Identity comparison is optional and parallel to all existing
+        // detectors. Only the access-controlled MinIO reference metadata is
+        // forwarded; the large Base64 image is not attached to every frame.
+        precheck: precheckMetadata,
+        identityComparisonEnabled: precheckMetadata.completed,
+        identity_comparison_enabled: precheckMetadata.completed,
+        identityReferenceId: precheckMetadata.referenceId,
+        identity_reference_id: precheckMetadata.referenceId,
+        identityReferenceObject: precheckMetadata.referenceObject,
+        identity_reference_object: precheckMetadata.referenceObject,
+        identityReferenceBucket: precheckMetadata.referenceBucket,
+        identity_reference_bucket: precheckMetadata.referenceBucket,
+        identityReferenceCapturedAt: precheckMetadata.photoCapturedAt,
+        identity_reference_captured_at: precheckMetadata.photoCapturedAt,
       });
       return true;
     } catch (error) {
@@ -877,7 +992,13 @@ export default function ActiveExam({ exam, assessment, onComplete, onLogout, onR
       );
       return false;
     }
-  }, [assessmentId, candidateId, examId, accessToken]);
+  }, [
+    assessmentId,
+    candidateId,
+    examId,
+    accessToken,
+    precheckMetadata,
+  ]);
 
   useEffect(() => {
     // Restore the original candidate entry time after refresh or remount.
@@ -1068,6 +1189,15 @@ try {
 
     const unsubscribe = window.electronAPI.onDetectionResult((payload) => {
       console.log("[DETECTION RESULT]", payload);
+      const identitySignal = findIdentityContinuitySignal(payload);
+      if (identitySignal?.mismatch) {
+        setIdentityBlockDetails(identitySignal);
+        setIdentityBlocked(true);
+        void window.electronAPI?.hideBrowser?.();
+      } else if (identitySignal?.samePerson) {
+        setIdentityBlockDetails(identitySignal);
+        setIdentityBlocked(false);
+      }
       setTimeout(() => void loadCandidateViolations({ silent: true }), 250);
       const warningPayload = payload?.persisted === true
         ? (payload?.backend || payload?.response || null)
@@ -1393,7 +1523,7 @@ clearWaitingSession();
   }, []);
 
   const showBrowserForActiveState = useCallback(async () => {
-    if (!window.electronAPI || completedRef.current || violationsOpen || progressiveWarning?.level === "REMOVAL") return false;
+    if (!window.electronAPI || completedRef.current || violationsOpen || identityBlocked || progressiveWarning?.level === "REMOVAL") return false;
     const shown = await safeElectron(() => window.electronAPI.showBrowser(), "Failed to show secured browser.", { silent: true });
     if (!shown) return false;
     const resized = await safeElectron(() => resizeBrowserToArea(), "Failed to resize BrowserView", { silent: false });
@@ -1402,7 +1532,7 @@ clearWaitingSession();
     // Routine status polling, Socket.IO updates, and resize synchronization must
     // never steal keyboard focus from the embedded React chat composer.
     return true;
-  }, [resizeBrowserToArea, safeElectron, violationsOpen, progressiveWarning?.level]);
+  }, [resizeBrowserToArea, safeElectron, violationsOpen, identityBlocked, progressiveWarning?.level]);
 
   const hideBrowserForPause = useCallback(async () => {
     if (!window.electronAPI || completedRef.current || !browserOpenedRef.current) return false;
@@ -1452,7 +1582,7 @@ clearWaitingSession();
         { silent: true },
       );
     }, 80);
-  }, [isPaused, isExamRunning, resizeBrowserToArea, safeElectron]);
+  }, [isPaused, identityBlocked, isExamRunning, resizeBrowserToArea, safeElectron]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1508,7 +1638,7 @@ clearWaitingSession();
       if (!cancelled && ok) {
         browserOpenedRef.current = true;
         setBrowserError("");
-        if (isPaused) await hideBrowserForPause();
+        if (isPaused || identityBlocked) await hideBrowserForPause();
         else await showBrowserForActiveState();
       }
     };
@@ -1519,6 +1649,7 @@ clearWaitingSession();
     allowedSites,
     isExamRunning,
     isPaused,
+    identityBlocked,
     obtainEntryPermission,
     hideBrowserForPause,
     showBrowserForActiveState,
@@ -1529,17 +1660,17 @@ clearWaitingSession();
   useEffect(() => {
     if (!browserOpenedRef.current || completedRef.current || !window.electronAPI) return;
     const sync = async () => {
-      if (isPaused || violationsOpen) {
+      if (isPaused || identityBlocked || violationsOpen) {
         await hideBrowserForPause();
       } else {
         await showBrowserForActiveState();
       }
     };
     sync();
-  }, [isPaused, violationsOpen, hideBrowserForPause, showBrowserForActiveState]);
+  }, [isPaused, identityBlocked, violationsOpen, hideBrowserForPause, showBrowserForActiveState]);
 
   useEffect(() => {
-    if (!activeUrl || !browserOpenedRef.current || completedRef.current || isPaused || violationsOpen) return;
+    if (!activeUrl || !browserOpenedRef.current || completedRef.current || isPaused || identityBlocked || violationsOpen) return;
     if (lastNavigatedUrlRef.current === activeUrl) return;
     let cancelled = false;
     const navigate = async () => {
@@ -1554,7 +1685,7 @@ clearWaitingSession();
     };
     navigate();
     return () => { cancelled = true; };
-  }, [activeUrl, isPaused, violationsOpen, safeElectron, showBrowserForActiveState]);
+  }, [activeUrl, isPaused, identityBlocked, violationsOpen, safeElectron, showBrowserForActiveState]);
 
   useEffect(() => {
     if (!browserAreaRef.current || typeof ResizeObserver === "undefined") {
@@ -1584,11 +1715,11 @@ clearWaitingSession();
       if (frameId) cancelAnimationFrame(frameId);
       observer.disconnect();
     };
-  }, [isPaused, violationsOpen, resizeBrowserToArea]);
+  }, [isPaused, identityBlocked, violationsOpen, resizeBrowserToArea]);
 
   useEffect(() => {
     const onResize = async () => {
-      if (!browserOpenedRef.current || completedRef.current || isPaused || violationsOpen) return;
+      if (!browserOpenedRef.current || completedRef.current || isPaused || identityBlocked || violationsOpen) return;
       await resizeBrowserToArea();
     };
 
@@ -1599,7 +1730,7 @@ clearWaitingSession();
       clearTimeout(id);
       window.removeEventListener("resize", onResize);
     };
-  }, [isPaused, violationsOpen, resizeBrowserToArea]);
+  }, [isPaused, identityBlocked, violationsOpen, resizeBrowserToArea]);
 
 
 
@@ -2208,8 +2339,21 @@ setPauseLocked(false);
             transition: "background 0.5s ease, border-color 0.5s ease",
           }}
         >
+          {/* Identity mismatch overlay. The native browser remains hidden until identity is restored. */}
+          {identityBlocked ? (
+            <div role="alert" aria-live="assertive" style={{ position: "absolute", inset: 0, background: t.overlay, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 110, textAlign: "center", padding: 28, animation: "fadeIn 0.3s ease" }}>
+              <div style={{ width: 86, height: 86, borderRadius: 24, background: t.dangerGradient, display: "flex", alignItems: "center", justifyContent: "center", color: "#ffffff", boxShadow: `0 18px 48px ${t.danger}55`, marginBottom: 22 }}>
+                <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              </div>
+              <div style={{ color: t.danger, fontSize: 11, fontWeight: 900, letterSpacing: 1.7, textTransform: "uppercase" }}>Identity verification required</div>
+              <h2 style={{ margin: "10px 0 0", color: "#ffffff", fontSize: 28, fontWeight: 800, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.5 }}>Different Person Detected</h2>
+              <p style={{ margin: "14px 0 0", color: "rgba(255,255,255,0.78)", fontSize: 15, maxWidth: 520, lineHeight: 1.7 }}>{identityBlockDetails?.message || "The person currently visible does not match the validated PreCheck reference photo."}</p>
+              <div style={{ marginTop: 18, padding: "12px 16px", borderRadius: 12, background: t.dangerBg, border: `1px solid ${t.danger}55`, color: "rgba(255,255,255,0.9)", fontSize: 13.5, lineHeight: 1.6, maxWidth: 520 }}>Please ensure the registered candidate is present in front of the camera. The exam website remains hidden while identity verification is unresolved.</div>
+              {identityBlockDetails?.similarity !== undefined && identityBlockDetails?.similarity !== null ? <div style={{ marginTop: 14, color: "rgba(255,255,255,0.5)", fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace" }}>Comparison score: {Number(identityBlockDetails.similarity).toFixed(4)}</div> : null}
+            </div>
+          ) : null}
           {/* Pause overlay */}
-          {isPaused ? (
+          {isPaused && !identityBlocked ? (
             <div
               style={{
                 position: "absolute",
@@ -2286,7 +2430,7 @@ setPauseLocked(false);
           ) : null}
 
           {/* Browser error banner */}
-          {browserError && !isPaused ? (
+          {browserError && !isPaused && !identityBlocked ? (
             <div
               style={{
                 position: "absolute",

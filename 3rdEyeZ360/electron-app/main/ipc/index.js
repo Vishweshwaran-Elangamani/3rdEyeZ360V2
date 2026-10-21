@@ -35,6 +35,27 @@ let monitoringToastTimer = null;
 let activeMainWindow = null;
 let powerMonitorRegistered = false;
 
+const identityIncidentState = new Map();
+function identityIncidentKey(a, c, e) { return [a, c, e].map(v => String(v || "")).join(":"); }
+function getIdentityIncident(payload) {
+  const key = identityIncidentKey(payload?.assessmentId, payload?.candidateId, payload?.examId);
+  if (!identityIncidentState.has(key)) identityIncidentState.set(key, { violationConfirmed: false, backendSubmissions: 0 });
+  return { key, state: identityIncidentState.get(key) };
+}
+function isIdentityMismatchResult(result) {
+  const detail = String(result?.detail || "").toLowerCase();
+  const issue = String(result?.issue || "").toLowerCase();
+  const decision = String(result?.identity_decision || result?.continuity_decision || "").toUpperCase();
+  return detail === "different_person" || issue === "identity_mismatch" || decision === "DIFFERENT_PERSON" || decision === "CONTINUITY_REVIEW_REQUIRED";
+}
+function isIdentityRecoveryResult(result) {
+  return String(result?.type || "").toLowerCase() === "identity_continuity" && (String(result?.identity_decision || "").toUpperCase() === "SAME_PERSON" || result?.recovery_event === true);
+}
+function backendConfirmedViolation(data) {
+  const action = String(data?.action || "").trim().toUpperCase();
+  return data?.violation === true || ["VIOLATION", "FINAL_WARNING", "FINALWARNING", "THRESHOLD_REACHED", "THRESHOLDREACHED", "LOCK"].includes(action);
+}
+
 function isWindowAlive(win) {
   return Boolean(
     win &&
@@ -119,6 +140,7 @@ function monitoringMessageFor(detail, fallback) {
     charger_disconnected: "Charger is disconnected. Please connect your charger.",
     charger_connected: "Charger connected.",
     battery_low: "Battery level is low. Please connect your charger.",
+    candidate_continuity_review: "Candidate continuity could not be confirmed.",
   };
 
   return (
@@ -156,6 +178,7 @@ function candidateActionFor(detail, fallback) {
     charger_disconnected: "Connect your charger.",
     charger_connected: "",
     battery_low: "Connect your charger.",
+    candidate_continuity_review: "Keep the registered candidate clearly visible in front of the camera.",
   };
 
   return fallback || actions[detail] || "Correct the monitoring issue shown on screen.";
@@ -188,6 +211,7 @@ function categoryFor(detail, fallback) {
     charger_disconnected: "power",
     charger_connected: "power",
     battery_low: "power",
+    candidate_continuity_review: "identity_continuity",
   };
 
   return fallback || categories[detail] || "monitoring";
@@ -261,6 +285,7 @@ const VIOLATION_AVATAR_ALIASES = {
   charger_disconnected: ["charger", "violation_warning"],
   charger_connected: ["charger", "violation_warning"],
   battery_low: ["charger", "violation_warning"],
+  candidate_continuity_review: ["another_person_warning", "violation_warning"],
 
   // Final and fallback warnings
   removal: ["violation_warning"],
@@ -788,6 +813,8 @@ function shouldIgnoreDetection(result) {
   const detail = String(result?.detail || "").trim().toLowerCase();
 
   return (
+    result?.persist === false ||
+    isIdentityRecoveryResult(result) ||
     detail === "ok" ||
     detail === "face_ok" ||
     detail === "charger_connected" ||
@@ -1299,6 +1326,11 @@ function registerIpcHandlers(mainWindow) {
       return { success: false, error: "Main window unavailable" };
     }
 
+    identityIncidentState.delete(identityIncidentKey(
+      pickField(data, "assessmentId", "assessmentid", "assessment_id"),
+      pickField(data, "candidateId", "candidateid", "candidate_id"),
+      pickField(data, "examId", "examid", "exam_id"),
+    ));
     startCapture(data, mainWindow);
     return { success: true };
   });
@@ -1597,6 +1629,18 @@ function registerIpcHandlers(mainWindow) {
           typing_sensitive: result.typing_sensitive,
         });
 
+        const identityIncident = getIdentityIncident(payload);
+        if (isIdentityRecoveryResult(result)) {
+          identityIncidentState.delete(identityIncident.key);
+          closeMonitoringToastWindow();
+          console.log("[IDENTITY INCIDENT] SAME_PERSON recovery cleared incident", { key: identityIncident.key });
+          continue;
+        }
+        if (isIdentityMismatchResult(result) && identityIncident.state.violationConfirmed) {
+          console.log("[IDENTITY INCIDENT] Repeated mismatch suppressed after confirmed violation", { key: identityIncident.key });
+          continue;
+        }
+
         if (shouldIgnoreDetection(result)) {
           console.log(
             "[IPC] Detection ignored for backend persistence",
@@ -1675,6 +1719,21 @@ function registerIpcHandlers(mainWindow) {
 
           console.log("[IPC] Detection persisted to backend", response.data);
 
+          const identityMismatch = isIdentityMismatchResult(result);
+          const currentIdentityIncident = getIdentityIncident(payload);
+          if (identityMismatch) {
+            currentIdentityIncident.state.backendSubmissions += 1;
+            if (backendConfirmedViolation(response.data)) {
+              currentIdentityIncident.state.violationConfirmed = true;
+              closeMonitoringToastWindow();
+              console.log("[IDENTITY INCIDENT] Confirmed violation reached; repeated identity events are suppressed until SAME_PERSON", {
+                key: currentIdentityIncident.key,
+                backendSubmissions: currentIdentityIncident.state.backendSubmissions,
+                action: response.data?.action,
+              });
+            }
+          }
+
           console.log("[NATIVE TOAST] before call", {
             toast: response.data?.toast,
             warning: response.data?.warning,
@@ -1684,16 +1743,23 @@ function registerIpcHandlers(mainWindow) {
             issue: response.data?.issue || result.issue,
           });
 
-          showNativeMonitoringToast(mainWindow, {
-            ...response.data,
-            category: response.data?.category || result.category,
-            issue: response.data?.issue || result.issue,
-            message: response.data?.message || result.message,
-            candidate_action:
-              response.data?.candidate_action || result.candidate_action,
-          });
-
-          console.log("[NATIVE TOAST] after call");
+          // The dedicated Different Person screen replaces native identity toasts.
+          // Persistence continues through the backend warning sequence, while all
+          // non-identity detector toasts continue unchanged.
+          if (!identityMismatch) {
+            showNativeMonitoringToast(mainWindow, {
+              ...response.data,
+              category: response.data?.category || result.category,
+              issue: response.data?.issue || result.issue,
+              message: response.data?.message || result.message,
+              candidate_action:
+                response.data?.candidate_action || result.candidate_action,
+            });
+            console.log("[NATIVE TOAST] after call");
+          } else {
+            closeMonitoringToastWindow();
+            console.log("[NATIVE TOAST] Different-person toast suppressed; dedicated blocking screen is active");
+          }
 
           safeSend(mainWindow, "detection-result", {
             source: "backend",

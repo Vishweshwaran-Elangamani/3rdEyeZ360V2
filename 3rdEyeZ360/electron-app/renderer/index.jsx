@@ -700,6 +700,7 @@ function App() {
   const [screen, setScreen] = useState("login");
   const [bootstrapping, setBootstrapping] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [precheckArtifacts, setPrecheckArtifacts] = useState(null);
 
   useEffect(() => {
     // If a renderer refresh skips the splash, switch the title bar to the
@@ -738,6 +739,7 @@ function App() {
     setScreen("login");
     setBootstrapping(false);
     setIsLoggingOut(false);
+    setPrecheckArtifacts(null);
     isLoggingOutRef.current = false;
     bootstrapDoneRef.current = false;
   }, [clearAuth, clearExam, reset]);
@@ -790,6 +792,7 @@ const handleLogout = useCallback(async () => {
    * Remove the assessment React page immediately.
    */
   setIsLoggingOut(true);
+  setPrecheckArtifacts(null);
   setScreen("login");
   screenRef.current = "login";
 
@@ -1157,14 +1160,19 @@ const handleLogout = useCallback(async () => {
 
       setAssessment(baseAssessment);
       setExam(merged);
+      setPrecheckArtifacts(null);
       setScreen("precheck");
+      screenRef.current = "precheck";
     },
     [fetchLiveAssessment, fetchLiveExam, setAssessment, setExam]
   );
 
-  const handlePreCheckPass = useCallback(() => {
+  const handlePreCheckPass = useCallback((artifacts) => {
     if (isLoggingOutRef.current) return;
+
+    setPrecheckArtifacts(artifacts || null);
     setScreen("instructions");
+    screenRef.current = "instructions";
   }, []);
 
   const handleStartMonitoring = useCallback(async () => {
@@ -1264,6 +1272,7 @@ const handleLogout = useCallback(async () => {
   ]);
 
   const handleReturnToDashboard = useCallback(async () => {
+    setPrecheckArtifacts(null);
     await cleanupElectron();
     await loadPrimaryCandidateState();
     if (!isLoggingOutRef.current) setScreen("candidate-dashboard");
@@ -1361,6 +1370,7 @@ if (
       <PreCheck
         exam={currentExam}
         assessment={currentAssessment}
+        accessToken={accessToken}
         onPass={handlePreCheckPass}
         onBack={handleReturnToDashboard}
         onLogout={handleLogout}
@@ -1372,6 +1382,7 @@ if (
       <Instructions
         exam={currentExam}
         assessment={currentAssessment}
+        precheckArtifacts={precheckArtifacts}
         onStart={handleStartMonitoring}
         onBack={() => setScreen("precheck")}
         onLogout={handleLogout}
@@ -1383,6 +1394,7 @@ if (
       <WaitScreen
         exam={currentExam}
         assessment={currentAssessment}
+        precheckArtifacts={precheckArtifacts}
         onExamStart={() => setScreen("exam")}
         onLogout={handleLogout}
         onComplete={handleExamComplete}
@@ -1395,6 +1407,7 @@ if (
       <ActiveExam
         exam={currentExam}
         assessment={currentAssessment}
+        precheckArtifacts={precheckArtifacts}
         onComplete={handleExamComplete}
         onLogout={handleLogout}
         onReturnToDashboard={handleReturnToDashboard}

@@ -624,9 +624,9 @@ function formatStatus(status) {
     status === undefined ||
     status === null ||
     String(status).trim() === "" ||
-    String(status).trim() === "—"
+    String(status).trim() === "â€”"
   ) {
-    return "—";
+    return "â€”";
   }
 
   const statusLabels = {
@@ -769,7 +769,10 @@ function InfoRow({ label, value, mono, t }) {
   );
 }
 
-export default function PreCheck({ exam, onPass, onLogout, onBack }) {
+const IDENTITY_STABLE_FRAMES = 3;
+const VOICE_PARAGRAPH = "I confirm that I am the registered candidate completing this assessment without assistance.";
+function readToken(){for(const k of ["access_token","accessToken","token","authToken"]){const v=localStorage.getItem(k)||sessionStorage.getItem(k);if(v)return v;}return null;}
+export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }) {
   const { theme, toggleTheme } = useTheme();
   const t = THEMES[theme];
   const videoRef = useRef(null);
@@ -779,7 +782,20 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
   const mountedRef = useRef(true);
   const runningRef = useRef(false);
   const cameraCanvasRef = useRef(null);
-
+  const captureCanvasRef = useRef(null);
+  const modalVideoRef = useRef(null);
+  const modalStreamRef = useRef(null);
+  const captureTimerRef = useRef(null);
+  const captureBusyRef = useRef(false);
+  const stableRef = useRef(0);
+  const [identityOpen,setIdentityOpen]=useState(false);
+  const [identityState,setIdentityState]=useState("idle");
+  const [identityMessage,setIdentityMessage]=useState("Complete system checks first.");
+  const [identityReference,setIdentityReference]=useState(null);
+  const [voiceEnabled,setVoiceEnabled]=useState(true);
+  const [voiceState,setVoiceState]=useState("idle");
+  const [voiceSample,setVoiceSample]=useState(null);
+  const [precheckError,setPrecheckError]=useState("");
   const [checks, setChecks] = useState({
     camera: null,
     microphone: null,
@@ -791,14 +807,14 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
     () => ({
       name: exam?.name || "Upcoming Exam",
       assessmentid:
-        exam?.assessmentid || exam?.assessmentId || exam?.assessment_id || "—",
-      examid: exam?.examid || exam?.examId || exam?.exam_id || "—",
-      durationminutes: exam?.durationminutes || "—",
-      date: exam?.date || "—",
-      starttime: exam?.starttime || "—",
-      endtime: exam?.endtime || "—",
-      status: exam?.status || "—",
-      examstatus: exam?.examstatus || "—",
+        exam?.assessmentid || exam?.assessmentId || exam?.assessment_id || "â€”",
+      examid: exam?.examid || exam?.examId || exam?.exam_id || "â€”",
+      durationminutes: exam?.durationminutes || "â€”",
+      date: exam?.date || "â€”",
+      starttime: exam?.starttime || "â€”",
+      endtime: exam?.endtime || "â€”",
+      status: exam?.status || "â€”",
+      examstatus: exam?.examstatus || "â€”",
       allowedwebsites: Array.isArray(exam?.allowedwebsites)
         ? exam.allowedwebsites
         : [],
@@ -810,10 +826,8 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
   );
 
   const clearTimers = useCallback(() => {
-    if (healthTimerRef.current) {
-      clearInterval(healthTimerRef.current);
-      healthTimerRef.current = null;
-    }
+    if (healthTimerRef.current) { clearInterval(healthTimerRef.current); healthTimerRef.current=null; }
+    if (captureTimerRef.current) { clearInterval(captureTimerRef.current); captureTimerRef.current=null; }
   }, []);
 
   const stopMedia = useCallback(() => {
@@ -823,6 +837,8 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
       streamRef.current = null;
     }
     cameraCanvasRef.current = null;
+    if(modalStreamRef.current){modalStreamRef.current.getTracks().forEach(t=>t.stop());modalStreamRef.current=null;}
+    if(modalVideoRef.current) modalVideoRef.current.srcObject=null;
     if (videoRef.current) {
       try {
         videoRef.current.srcObject = null;
@@ -1049,6 +1065,380 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
     startContinuousMonitoring,
   ]);
 
+  const allPassed = Object.values(checks).every((value) => value === true);
+  const voiceBypassed = import.meta.env.DEV && voiceEnabled === false;
+  const voiceComplete = voiceBypassed || voiceState === "passed";
+  const identityComplete = identityReference?.status === "VALIDATED";
+  const canContinue = allPassed && identityComplete && voiceComplete && !running;
+
+  const closeIdentityModal = useCallback(() => {
+    if (captureTimerRef.current) {
+      clearInterval(captureTimerRef.current);
+      captureTimerRef.current = null;
+    }
+
+    captureBusyRef.current = false;
+    stableRef.current = 0;
+
+    if (modalStreamRef.current) {
+      modalStreamRef.current.getTracks().forEach((track) => track.stop());
+      modalStreamRef.current = null;
+    }
+
+    if (modalVideoRef.current) {
+      try {
+        modalVideoRef.current.pause();
+        modalVideoRef.current.srcObject = null;
+      } catch (error) {
+        console.warn("Unable to clear identity capture camera", error);
+      }
+    }
+
+    setIdentityOpen(false);
+  }, []);
+
+  const captureImage = useCallback(() => {
+    const video = modalVideoRef.current;
+
+    if (
+      !video ||
+      video.readyState < 2 ||
+      video.videoWidth <= 0 ||
+      video.videoHeight <= 0
+    ) {
+      throw new Error("The capture camera is not ready.");
+    }
+
+    const canvas =
+      captureCanvasRef.current ||
+      (captureCanvasRef.current = document.createElement("canvas"));
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Unable to read the camera image.");
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  }, []);
+
+  const checkIdentityFrame = useCallback(async () => {
+    const modalVideo = modalVideoRef.current;
+
+    if (
+      captureBusyRef.current ||
+      !modalVideo ||
+      modalVideo.readyState < 2 ||
+      modalVideo.videoWidth <= 0 ||
+      modalVideo.videoHeight <= 0
+    ) {
+      return;
+    }
+
+    captureBusyRef.current = true;
+
+    try {
+      const image = captureImage();
+      const response = await fetch(
+        "http://127.0.0.1:5001/detect/face/reference/validate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ frame: image }),
+        },
+      );
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const serverDetail =
+          typeof result?.detail === "object" ? result.detail : result;
+
+        throw new Error(
+          serverDetail?.candidate_action ||
+            serverDetail?.message ||
+            (typeof result?.detail === "string" ? result.detail : null) ||
+            `Reference validation failed with status ${response.status}.`,
+        );
+      }
+
+      const detail = String(result?.detail || "").toLowerCase();
+      const accepted =
+        result?.accepted === true && detail === "reference_face_ok";
+
+      if (!accepted) {
+        stableRef.current = 0;
+        setIdentityState("adjust");
+        setIdentityMessage(
+          result?.candidate_action ||
+            result?.message ||
+            "Place the complete face inside the oval and hold still.",
+        );
+        return;
+      }
+
+      stableRef.current += 1;
+      setIdentityState("checking");
+      setIdentityMessage(
+        `Good position and image quality. Hold still (${stableRef.current}/${IDENTITY_STABLE_FRAMES}).`,
+      );
+
+      if (stableRef.current < IDENTITY_STABLE_FRAMES) {
+        return;
+      }
+
+      // Stop additional checks while the exact accepted frame is stored.
+      if (captureTimerRef.current) {
+        clearInterval(captureTimerRef.current);
+        captureTimerRef.current = null;
+      }
+
+      setIdentityState("storing");
+      setIdentityMessage("Photo is valid. Verifying and storing it...");
+
+      const token = accessToken || readToken();
+      if (!token) {
+        throw new Error("Authenticated session token was not provided to PreCheck.");
+      }
+
+      const assessmentId = examView.assessmentid;
+      const capturedAt = new Date().toISOString();
+      const storedResponse = await fetch(
+        `http://127.0.0.1:3000/api/assessments/${encodeURIComponent(assessmentId)}/identity-reference`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            image_b64: image,
+            captured_at: capturedAt,
+            validation: result,
+          }),
+        },
+      );
+
+      const stored = await storedResponse.json().catch(() => ({}));
+      if (
+        !storedResponse.ok ||
+        String(stored?.status || "").toUpperCase() !== "VALIDATED"
+      ) {
+        throw new Error(
+          stored?.detail || stored?.message || "Photo storage failed.",
+        );
+      }
+
+      setIdentityReference({
+        referencePhoto: image,
+        photoCapturedAt: stored.captured_at || capturedAt,
+        referenceId: stored.reference_id || stored.referenceid,
+        referenceObject: stored.evidence_object || stored.evidenceobject,
+        referenceBucket: stored.evidence_bucket || stored.evidencebucket,
+        status: "VALIDATED",
+        validation: stored.validation || result,
+      });
+      setIdentityState("passed");
+      setIdentityMessage(
+        "Identity photo is valid and stored. Review it below or choose Retake photo.",
+      );
+      closeIdentityModal();
+    } catch (error) {
+      stableRef.current = 0;
+      setIdentityState("error");
+      setIdentityMessage(
+        error?.message || "Photo validation failed. Close the window and retry.",
+      );
+
+      if (captureTimerRef.current) {
+        clearInterval(captureTimerRef.current);
+        captureTimerRef.current = null;
+      }
+    } finally {
+      captureBusyRef.current = false;
+    }
+  }, [
+    accessToken,
+    captureImage,
+    closeIdentityModal,
+    examView.assessmentid,
+  ]);
+
+  const openIdentityModal = useCallback(async () => {
+    if (!allPassed) {
+      setPrecheckError(
+        "Complete the camera, microphone, and connection checks first.",
+      );
+      return;
+    }
+
+    const sourceTrack = streamRef.current?.getVideoTracks?.()[0];
+    const primaryVideo = videoRef.current;
+
+    if (!sourceTrack || sourceTrack.readyState !== "live") {
+      setPrecheckError("The camera stream is unavailable. Retry the checks.");
+      return;
+    }
+
+    if (
+      !primaryVideo ||
+      primaryVideo.readyState < 2 ||
+      primaryVideo.videoWidth <= 0 ||
+      primaryVideo.videoHeight <= 0
+    ) {
+      setPrecheckError(
+        "Wait until the main live camera preview appears, then start automatic capture.",
+      );
+      return;
+    }
+
+    if (captureTimerRef.current) {
+      clearInterval(captureTimerRef.current);
+      captureTimerRef.current = null;
+    }
+    if (modalStreamRef.current) {
+      modalStreamRef.current.getTracks().forEach((track) => track.stop());
+      modalStreamRef.current = null;
+    }
+
+    setPrecheckError("");
+    stableRef.current = 0;
+    captureBusyRef.current = false;
+    setIdentityReference(null);
+    setIdentityState("checking");
+    setIdentityMessage("Starting the camera preview...");
+    setIdentityOpen(true);
+
+    // Wait until React has mounted the modal video element.
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
+
+    const modalVideo = modalVideoRef.current;
+    if (!modalVideo) {
+      setIdentityState("error");
+      setIdentityMessage("The capture window could not initialize. Close and retry.");
+      return;
+    }
+
+    const clonedTrack = sourceTrack.clone();
+    const clonedStream = new MediaStream([clonedTrack]);
+    modalStreamRef.current = clonedStream;
+    modalVideo.srcObject = clonedStream;
+
+    try {
+      await new Promise((resolve, reject) => {
+        let finished = false;
+        let timeoutId = null;
+
+        const cleanup = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          modalVideo.removeEventListener("loadedmetadata", ready);
+          modalVideo.removeEventListener("canplay", ready);
+        };
+
+        const ready = () => {
+          if (
+            finished ||
+            modalVideo.readyState < 2 ||
+            modalVideo.videoWidth <= 0 ||
+            modalVideo.videoHeight <= 0
+          ) {
+            return;
+          }
+
+          finished = true;
+          cleanup();
+          resolve();
+        };
+
+        timeoutId = window.setTimeout(() => {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          reject(new Error("The capture camera preview did not become ready."));
+        }, 5000);
+
+        modalVideo.addEventListener("loadedmetadata", ready);
+        modalVideo.addEventListener("canplay", ready);
+        ready();
+      });
+
+      await modalVideo.play();
+      setIdentityMessage(
+        "Move the complete face inside the oval and look directly at the camera.",
+      );
+
+      // Begin checks only after the cloned camera is genuinely playable.
+      window.setTimeout(() => void checkIdentityFrame(), 150);
+      captureTimerRef.current = window.setInterval(
+        () => void checkIdentityFrame(),
+        1100,
+      );
+    } catch (error) {
+      clonedTrack.stop();
+      modalStreamRef.current = null;
+      modalVideo.srcObject = null;
+      setIdentityState("error");
+      setIdentityMessage(
+        error?.message || "The camera preview is unavailable. Close and retry.",
+      );
+    }
+  }, [allPassed, checkIdentityFrame]);
+
+  const toggleVoice = () => {
+    if (!import.meta.env.DEV) return;
+    setVoiceEnabled((current) => {
+      const next = !current;
+      setVoiceSample(null);
+      setVoiceState(next ? "idle" : "bypassed");
+      setPrecheckError("");
+      return next;
+    });
+  };
+  const recordVoice=()=>{const track=streamRef.current?.getAudioTracks?.()[0];if(!track)return;const rec=new MediaRecorder(new MediaStream([track]));const chunks=[];setVoiceState("recording");rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};rec.onstop=()=>{const b=new Blob(chunks,{type:rec.mimeType||"audio/webm"});if(b.size<10000){setVoiceState("error");return;}setVoiceSample(b);setVoiceState("passed");};rec.start(500);setTimeout(()=>{if(rec.state==="recording")rec.stop()},20000);};
+  const handleContinue = () => {
+    setPrecheckError("");
+
+    if (running) {
+      setPrecheckError("Wait for the system checks to finish.");
+      return;
+    }
+    if (!allPassed) {
+      setPrecheckError("Camera, microphone, and connection checks must pass.");
+      return;
+    }
+    if (!identityComplete) {
+      setPrecheckError("Capture and validate the identity photo before continuing.");
+      return;
+    }
+    if (!voiceComplete) {
+      setPrecheckError(
+        'Finish the voice recording, or switch "Enabled" to "Bypassed" in development mode.',
+      );
+      return;
+    }
+    if (typeof onPass !== "function") {
+      setPrecheckError("Unable to open Instructions because navigation is unavailable.");
+      return;
+    }
+
+    onPass({
+      referencePhoto: identityReference.referencePhoto,
+      photoCapturedAt: identityReference.photoCapturedAt,
+      identityReference,
+      voiceSample: voiceBypassed ? null : voiceSample,
+      voiceSampleMimeType: voiceBypassed ? null : voiceSample?.type || null,
+      voiceRecordedAt: voiceState === "passed" ? new Date().toISOString() : null,
+      voiceValidationBypassed: voiceBypassed,
+      voice_validation_bypassed: voiceBypassed,
+      temporary: true,
+    });
+  };
+
   useEffect(() => {
     mountedRef.current = true;
     if (!hasAutoStartedRef.current) {
@@ -1061,7 +1451,6 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
     };
   }, [startChecks, stopMedia]);
 
-  const allPassed = Object.values(checks).every((value) => value === true);
   const hasAnyFailure = Object.values(checks).some((value) => value === false);
   const completedChecks = Object.values(checks).filter(
     (value) => value !== null,
@@ -1235,7 +1624,7 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
                 lineHeight: 1,
               }}
             >
-              Step 1 of 2 · Verify Setup
+              Step 1 of 2 Â· Verify Setup
             </span>
           </div>
         </div>
@@ -1612,6 +2001,11 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
                 />
               </div>
 
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div style={{padding:12,borderRadius:12,border:`1px solid ${t.border}`,background:t.surfaceGlass}}><b>Identity photo</b><div style={{fontSize:12,color:identityState==="passed"?t.success:t.textMuted,margin:"7px 0"}}>{identityMessage}</div>{identityReference?.referencePhoto&&<img src={identityReference.referencePhoto} alt="Identity reference" style={{width:"100%",height:100,objectFit:"cover",borderRadius:9,marginBottom:8}}/>}<button type="button" disabled={!allPassed} onClick={openIdentityModal} style={{width:"100%",padding:9,borderRadius:9,border:`1px solid ${t.borderStrong}`,background:t.surfaceGlassHover,color:t.textPrimary,cursor:"pointer"}}>{identityReference?"Retake photo":"Start automatic capture"}</button></div>
+                <div style={{padding:12,borderRadius:12,border:`1px solid ${t.border}`,background:t.surfaceGlass}}><div style={{display:"flex",justifyContent:"space-between"}}><b>Voice paragraph</b>{import.meta.env.DEV&&<button type="button" onClick={toggleVoice}>{voiceEnabled?"Enabled":"Bypassed"}</button>}</div><p style={{fontSize:11.5,color:t.textSecondary}}>{VOICE_PARAGRAPH}</p><div style={{fontSize:12,color:voiceState==="passed"||voiceState==="bypassed"?t.success:t.textMuted,marginBottom:7}}>{voiceState==="recording"?"Recording for 20 seconds...":voiceState==="passed"?"Voice sample recorded.":voiceState==="bypassed"?"Voice bypassed in development.":"Record when the identity photo is ready."}</div><button type="button" disabled={!voiceEnabled||!identityReference||voiceState==="recording"} onClick={recordVoice} style={{width:"100%",padding:9}}>{voiceState==="recording"?"Recording...":"Record paragraph"}</button></div>
+              </div>
+              {precheckError&&<div style={{color:t.danger,background:t.dangerBg,padding:10,borderRadius:10}}>{precheckError}</div>}
               {!running && hasAnyFailure && (
                 <div
                   style={{
@@ -1647,7 +2041,7 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
               )}
 
               <div style={{ display: "flex", gap: 10 }}>
-                {!running && !allPassed && (
+                {!running && (
                   <button
                     onClick={startChecks}
                     style={{
@@ -1686,8 +2080,10 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
                 )}
 
                 <button
-                  onClick={allPassed ? onPass : undefined}
-                  disabled={!allPassed || running}
+                  type="button"
+                  onClick={handleContinue}
+                  disabled={running}
+                  aria-disabled={!canContinue}
                   className="cta-shine"
                   style={{
                     flex: 1,
@@ -1698,11 +2094,11 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
                     background: t.accentGradient,
                     border: "none",
                     borderRadius: 12,
-                    cursor: allPassed && !running ? "pointer" : "not-allowed",
-                    opacity: allPassed && !running ? 1 : 0.5,
+                    cursor: running ? "wait" : "pointer",
+                    opacity: canContinue ? 1 : 0.62,
                     fontFamily: "'Inter', sans-serif",
                     letterSpacing: 0.4,
-                    boxShadow: t.glowAccent,
+                    boxShadow: canContinue ? t.glowAccent : "none",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -1836,7 +2232,7 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
                     <InfoRow label="Date" value={examView.date} t={t} />
                     <InfoRow
                       label="Window"
-                      value={`${examView.starttime} — ${examView.endtime}`}
+                      value={`${examView.starttime} â€” ${examView.endtime}`}
                       t={t}
                     />
                     <InfoRow
@@ -2126,6 +2522,7 @@ export default function PreCheck({ exam, onPass, onLogout, onBack }) {
           </div>
         </div>
       </div>
+      {identityOpen&&<div role="dialog" aria-modal="true" style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,.82)",display:"flex",alignItems:"center",justifyContent:"center",padding:24}}><div style={{width:"min(760px,96vw)",background:t.cardSurface,border:`1px solid ${t.borderStrong}`,borderRadius:22,padding:20}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}><div><b style={{fontSize:18}}>Automatic identity capture</b><div style={{fontSize:12,color:t.textMuted}}>Follow the live suggestion. Capture is automatic.</div></div><button type="button" onClick={closeIdentityModal}>Ã—</button></div><div style={{position:"relative",aspectRatio:"16/9",overflow:"hidden",borderRadius:16,background:"#000"}}><video ref={modalVideoRef} autoPlay muted playsInline style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/><div style={{position:"absolute",left:"50%",top:"50%",width:"34%",height:"72%",transform:"translate(-50%,-50%)",borderRadius:"50%",border:`4px solid ${identityState==="adjust"||identityState==="error"?t.danger:t.warning}`,boxShadow:"0 0 0 999px rgba(0,0,0,.28)"}}/><div style={{position:"absolute",left:16,right:16,bottom:16,padding:12,borderRadius:12,background:"rgba(0,0,0,.75)",color:"white",textAlign:"center",fontWeight:700}}>{identityState==="storing"?"Verifying and storing photo...":identityMessage}</div></div></div></div>}
     </div>
   );
 }

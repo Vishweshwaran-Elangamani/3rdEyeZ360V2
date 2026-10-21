@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import base64
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +11,7 @@ from middleware.auth import requirerole
 from sockets.monitoring_socket import emit_assessment_event
 from services.exam_session_service import is_assessment_finalized, is_multi_session_exam
 from services.evidence_service import upload_screenshot
-from config.minio_client import get_minio_bucket
+from config.minio_client import get_minio, get_minio_bucket
 
 router = APIRouter(prefix="/api/assessments", tags=["Assessments"])
 
@@ -30,6 +31,14 @@ class InterruptAssessmentBody(BaseModel):
 
 class HeartbeatBody(BaseModel):
     sessionid: str
+
+
+class IdentityReferenceBody(BaseModel):
+    imageb64: str | None = None
+    image_b64: str | None = None
+    capturedat: str | None = None
+    captured_at: str | None = None
+    validation: dict | None = None
 
 
 class DetectionBody(BaseModel):
@@ -414,6 +423,7 @@ def _detection_category(detail: str, fallback: str | None = None) -> str:
         "charger_disconnected": "power",
         "charger_connected": "power",
         "battery_low": "power",
+        "candidate_continuity_review": "identity_continuity",
     }
     return fallback or categories.get(key, "monitoring")
 
@@ -453,6 +463,7 @@ def _candidate_action(detail: str, fallback: str | None = None) -> str:
         "charger_disconnected": "Connect your charger.",
         "battery_low": "Connect your charger.",
         "charger_connected": "",
+        "candidate_continuity_review": "Keep the registered candidate clearly visible in front of the camera.",
     }
     return fallback or actions.get(key, "Correct the monitoring issue shown on screen.")
 
@@ -482,6 +493,7 @@ def _detection_message(detail: str, fallback: str | None = None) -> str:
         "charger_disconnected": "Charger is disconnected. Please connect your charger.",
         "charger_connected": "Charger connected.",
         "battery_low": "Battery level is low. Please connect your charger.",
+        "candidate_continuity_review": "Candidate continuity could not be confirmed.",
     }
     return fallback or messages.get(key, "Please follow the exam monitoring instructions.")
 
@@ -506,6 +518,7 @@ def _detection_policy(detection_type: str, detail: str, count: int) -> dict:
         "eye_gaze_right",
         "eye_gaze_down",
         "background_speech",
+        "candidate_continuity_review",
     }
     low = {"high_noise", "mic_silent", "charger_disconnected", "battery_low"}
 
@@ -1018,6 +1031,159 @@ async def detect_assessment_activity(body: DetectionBody, current_user=Depends(r
         "assessment": payload,
     }
 
+
+@router.post("/{assessment_id}/identity-reference")
+async def store_identity_reference(
+    assessment_id: str,
+    body: IdentityReferenceBody,
+    current_user=Depends(requirerole("Candidate")),
+):
+    """Store a validated precheck image in the existing evidence bucket."""
+    db = getdb()
+    assessment = await _get_assessment_doc(db, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    user_id = current_user.get("userid") or current_user.get("user_id")
+    candidate_id = assessment.get("candidateid") or assessment.get("candidate_id")
+    exam_id = assessment.get("examid") or assessment.get("exam_id")
+
+    if str(candidate_id) != str(user_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not exam_id or not candidate_id:
+        raise HTTPException(status_code=409, detail="Assessment identity information is incomplete")
+
+    image_b64 = body.imageb64 or body.image_b64
+    if not image_b64 or not str(image_b64).strip():
+        raise HTTPException(status_code=400, detail="Validated precheck image is required")
+
+    validation = body.validation if isinstance(body.validation, dict) else {}
+    reference_id = f"REF-{uuid.uuid4().hex.upper()}"
+
+    try:
+        evidence_object = await run_in_threadpool(
+            upload_screenshot,
+            str(exam_id),
+            str(candidate_id),
+            "identity_reference",
+            image_b64,
+            assessment_id,
+            reference_id,
+        )
+    except Exception as error:
+        print("[Evidence] Identity reference upload failed:", reference_id, error)
+        raise HTTPException(status_code=500, detail="Identity reference could not be stored") from error
+
+    now = datetime.utcnow()
+    captured_at = body.capturedat or body.captured_at or now.isoformat()
+    bucket = get_minio_bucket()
+    update = {
+        "identityreferenceid": reference_id,
+        "identity_reference_id": reference_id,
+        "identityreferenceobject": evidence_object,
+        "identity_reference_object": evidence_object,
+        "identityreferencebucket": bucket,
+        "identity_reference_bucket": bucket,
+        "identityreferencestatus": "VALIDATED",
+        "identity_reference_status": "VALIDATED",
+        "identityreferencecapturedat": captured_at,
+        "identity_reference_captured_at": captured_at,
+        "identityreferencevalidation": validation,
+        "identity_reference_validation": validation,
+        "updatedat": now,
+        "updated_at": now,
+    }
+
+    await db.assessments.update_one(_assessment_query(assessment_id), {"$set": update})
+    updated = await _get_assessment_doc(db, assessment_id)
+    exam = await _get_exam_doc(db, exam_id)
+    assessment_payload = _merge_exam_into_assessment(updated, exam)
+    await emit_assessment_event("assessment_updated", assessment_payload)
+
+    return {
+        "success": True,
+        "status": "VALIDATED",
+        "referenceid": reference_id,
+        "reference_id": reference_id,
+        "evidencebucket": bucket,
+        "evidence_bucket": bucket,
+        "evidenceobject": evidence_object,
+        "evidence_object": evidence_object,
+        "capturedat": captured_at,
+        "captured_at": captured_at,
+        "validation": validation,
+    }
+
+
+@router.get("/{assessment_id}/identity-reference")
+async def get_identity_reference(
+    assessment_id: str,
+    current_user=Depends(requirerole("Candidate", "Examiner", "Admin")),
+):
+    """Return the validated identity-reference image to an authorized exam session."""
+    db = getdb()
+    assessment = await _get_assessment_doc(db, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    user_id = current_user.get("userid") or current_user.get("user_id")
+    role = current_user.get("role")
+    candidate_id = assessment.get("candidateid") or assessment.get("candidate_id")
+    examiner_id = assessment.get("examinerid") or assessment.get("examiner_id")
+    if role == "Candidate" and str(user_id) != str(candidate_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if role == "Examiner" and str(user_id) != str(examiner_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    status = str(
+        assessment.get("identityreferencestatus")
+        or assessment.get("identity_reference_status")
+        or ""
+    ).upper()
+    object_name = (
+        assessment.get("identityreferenceobject")
+        or assessment.get("identity_reference_object")
+    )
+    bucket = (
+        assessment.get("identityreferencebucket")
+        or assessment.get("identity_reference_bucket")
+        or get_minio_bucket()
+    )
+    reference_id = (
+        assessment.get("identityreferenceid")
+        or assessment.get("identity_reference_id")
+    )
+    if status != "VALIDATED" or not object_name:
+        raise HTTPException(status_code=404, detail="Validated identity reference not found")
+
+    response = None
+    try:
+        client = get_minio()
+        response = await run_in_threadpool(client.get_object, bucket, object_name)
+        image_bytes = await run_in_threadpool(response.read)
+    except Exception as error:
+        print("[Evidence] Identity reference download failed:", reference_id, error)
+        raise HTTPException(status_code=500, detail="Identity reference could not be loaded") from error
+    finally:
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
+
+    return {
+        "success": True,
+        "status": status,
+        "referenceid": reference_id,
+        "reference_id": reference_id,
+        "evidencebucket": bucket,
+        "evidence_bucket": bucket,
+        "evidenceobject": object_name,
+        "evidence_object": object_name,
+        "imageb64": base64.b64encode(image_bytes).decode("ascii"),
+        "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+    }
 
 @router.get("/{assessment_id}")
 async def get_assessment(assessment_id: str, current_user=Depends(requirerole("Candidate", "Examiner", "Admin"))):

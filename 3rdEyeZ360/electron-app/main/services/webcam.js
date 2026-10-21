@@ -5,6 +5,7 @@
 const axios = require("axios");
 
 const DETECTION_URL = process.env.DETECTION_URL || "http://127.0.0.1:5001";
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3000";
 const DETECTION_TIMEOUT_MS = Number(process.env.DETECTION_TIMEOUT_MS || 15000);
 const ENABLE_EYE_DETECTION =
   String(process.env.ENABLE_EYE_DETECTION || "true").toLowerCase() === "true";
@@ -16,6 +17,8 @@ const STRONG_HEAD_TURN_CONFIDENCE = Number(
 
 let sessionData = null;
 let captureRunning = false;
+let cachedIdentityReference = null;
+let cachedIdentityReferenceKey = null;
 
 function normaliseValue(data, ...keys) {
   for (const key of keys) {
@@ -135,6 +138,8 @@ function buildDetectionMetadata(type, detail) {
     background_speech: ["voice", "background_speech", "Background speech detected. Please stay in a quiet environment.", "Move to a quiet place or ask others to stop speaking.", false],
     high_noise: ["voice", "high_noise", "High background noise detected. Please reduce surrounding noise.", "Reduce surrounding noise.", false],
     mic_silent: ["voice", "mic_silent", "Microphone input is very low. Please check your microphone.", "Check that your microphone is connected and working.", false],
+    different_person: ["identity", "identity_mismatch", "Person looks different from the validated PreCheck photo.", "Please ensure the registered candidate is present in front of the camera.", false],
+    identity_mismatch: ["identity", "identity_mismatch", "Person looks different from the validated PreCheck photo.", "Please ensure the registered candidate is present in front of the camera.", false],
   };
   const item = metadata[key] || [type || "monitoring", key || "unknown_issue", "Please follow the exam monitoring instructions.", "Correct the monitoring issue shown on screen.", false];
   return {
@@ -234,6 +239,271 @@ async function callDetector(name, url, payload) {
       detector: name,
       reason: error?.response?.data || error?.message || "Detector request failed",
     };
+  }
+}
+
+
+async function getIdentityReference() {
+  const enabled = toBoolean(
+    normaliseValue(
+      sessionData,
+      "identityComparisonEnabled",
+      "identity_comparison_enabled",
+    ),
+    false,
+  );
+  const assessmentId = getSessionIds(sessionData).assessmentId;
+  const token = normaliseValue(
+    sessionData,
+    "token",
+    "accessToken",
+    "access_token",
+  );
+  const sessionReferenceId = normaliseValue(
+    sessionData,
+    "identityReferenceId",
+    "identity_reference_id",
+  );
+
+  if (!enabled || !assessmentId || !token || !sessionReferenceId) {
+    console.warn("[FACE CONTINUITY] Identity comparison skipped.", {
+      enabled,
+      assessmentId,
+      referenceId: sessionReferenceId,
+      tokenAvailable: Boolean(token),
+    });
+    return null;
+  }
+
+  const cacheKey = `${assessmentId}:${sessionReferenceId}`;
+  if (cachedIdentityReference && cachedIdentityReferenceKey === cacheKey) {
+    return cachedIdentityReference;
+  }
+
+  try {
+    const response = await axios.get(
+      `${BACKEND_URL}/api/assessments/${assessmentId}/identity-reference`,
+      {
+        timeout: DETECTION_TIMEOUT_MS,
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+
+    const data = response.data || {};
+    const image = normaliseValue(
+      data,
+      "imageb64",
+      "image_b64",
+      "frame",
+      "reference_frame",
+      "data_url",
+      "image_url",
+    );
+    const objectName =
+      normaliseValue(
+        data,
+        "object",
+        "object_name",
+        "objectName",
+        "evidence_object",
+        "identity_reference_object",
+        "identityReferenceObject",
+      ) ||
+      normaliseValue(
+        sessionData,
+        "identityReferenceObject",
+        "identity_reference_object",
+      );
+    const bucket =
+      normaliseValue(
+        data,
+        "bucket",
+        "bucket_name",
+        "bucketName",
+        "identity_reference_bucket",
+        "identityReferenceBucket",
+      ) ||
+      normaliseValue(
+        sessionData,
+        "identityReferenceBucket",
+        "identity_reference_bucket",
+      );
+    const referenceId =
+      normaliseValue(
+        data,
+        "reference_id",
+        "referenceId",
+        "identity_reference_id",
+        "identityReferenceId",
+      ) || sessionReferenceId;
+
+    if (!image && !objectName) {
+      console.warn(
+        "[FACE CONTINUITY] Reference has neither image nor object name.",
+        { assessmentId, referenceId },
+      );
+      return null;
+    }
+
+    cachedIdentityReference = {
+      frame: image ? cleanBase64Frame(image) : null,
+      referenceId,
+      objectName,
+      bucket,
+    };
+    cachedIdentityReferenceKey = cacheKey;
+
+    console.log("[FACE CONTINUITY] Identity reference loaded and cached.", {
+      assessmentId,
+      referenceId,
+      imageAvailable: Boolean(cachedIdentityReference.frame),
+      objectAvailable: Boolean(objectName),
+      bucketAvailable: Boolean(bucket),
+    });
+    return cachedIdentityReference;
+  } catch (error) {
+    console.warn("[FACE CONTINUITY] Identity reference load failed.", {
+      status: error?.response?.status,
+      message: error?.response?.data || error?.message,
+    });
+    return null;
+  }
+}
+
+async function callContinuityDetector(
+  currentFrame,
+  assessmentId,
+  candidateId,
+  examId,
+) {
+  const reference = await getIdentityReference();
+  if (!reference) return null;
+
+  try {
+    const response = await axios.post(
+      `${DETECTION_URL}/detect/face/continuity`,
+      {
+        frame: currentFrame,
+        current_frame: currentFrame,
+        currentFrame,
+        reference_frame: reference.frame,
+        referenceFrame: reference.frame,
+        reference_id: reference.referenceId,
+        referenceId: reference.referenceId,
+        identity_reference_id: reference.referenceId,
+        identityReferenceId: reference.referenceId,
+        object_name: reference.objectName,
+        objectName: reference.objectName,
+        reference_object: reference.objectName,
+        identity_reference_object: reference.objectName,
+        bucket: reference.bucket,
+        bucket_name: reference.bucket,
+        bucketName: reference.bucket,
+        assessment_id: assessmentId,
+        assessmentId,
+        candidate_id: candidateId,
+        candidateId,
+        exam_id: examId,
+        examId,
+      },
+      {
+        timeout: DETECTION_TIMEOUT_MS,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+    const raw = unwrapDetectorResult(response.data || {});
+    const decision = String(
+      raw.decision ||
+        raw.identity_decision ||
+        raw.identityDecision ||
+        "INCONCLUSIVE",
+    ).toUpperCase();
+    const similarity = toNumber(
+      raw.similarity ?? raw.identity_similarity ?? raw.identitySimilarity,
+      null,
+    );
+
+    console.log("[FACE CONTINUITY] Comparison completed.", {
+      decision,
+      similarity,
+      detail: raw.detail,
+      referenceId: reference.referenceId,
+    });
+
+    const mismatchDecisions = new Set([
+      "DIFFERENT_PERSON",
+      "CONTINUITY_REVIEW_REQUIRED",
+    ]);
+
+    if (decision === "SAME_PERSON") {
+      // Renderer-only recovery event. Keep detail as "ok" so the existing IPC
+      // persistence filter does not send this successful check as a violation.
+      return normaliseDetectionResult("identity_continuity", {
+        ...raw,
+        type: "identity_continuity",
+        detected: false,
+        detail: "ok",
+        recovery_detail: "same_person",
+        category: "identity",
+        issue: null,
+        confidence: toNumber(raw.confidence, similarity === null ? 1 : similarity),
+        message: "Registered candidate identity confirmed.",
+        candidate_action: null,
+        typing_sensitive: false,
+        identity_decision: "SAME_PERSON",
+        continuity_decision: decision,
+        identity_similarity: similarity,
+        identity_reference_id: reference.referenceId,
+        identity_reference_object: reference.objectName,
+        identity_reference_bucket: reference.bucket,
+        recovery_event: true,
+        persist: false,
+      });
+    }
+    if (decision === "INCONCLUSIVE") {
+      return null;
+    }
+    if (!mismatchDecisions.has(decision)) {
+      console.warn("[FACE CONTINUITY] Unknown identity decision ignored.", {
+        decision,
+      });
+      return null;
+    }
+
+    return normaliseDetectionResult("identity_continuity", {
+      ...raw,
+      type: "identity_continuity",
+      detected: true,
+      detail: "different_person",
+      category: "identity",
+      issue: "identity_mismatch",
+      confidence: toNumber(
+        raw.confidence ?? raw.comparison_confidence ?? raw.mismatch_confidence,
+        similarity === null ? 0 : Math.max(0, Math.min(1, 1 - similarity)),
+      ),
+      message:
+        raw.message ||
+        "Person looks different from the validated PreCheck photo.",
+      candidate_action:
+        raw.candidate_action ||
+        raw.candidateAction ||
+        "Please ensure the registered candidate is present in front of the camera.",
+      typing_sensitive: false,
+      identity_decision: "DIFFERENT_PERSON",
+      continuity_decision: decision,
+      identity_similarity: similarity,
+      identity_reference_id: reference.referenceId,
+      identity_reference_object: reference.objectName,
+      identity_reference_bucket: reference.bucket,
+    });
+  } catch (error) {
+    console.warn("[FACE CONTINUITY] Comparison request failed.", {
+      endpoint: `${DETECTION_URL}/detect/face/continuity`,
+      status: error?.response?.status,
+      message: error?.response?.data || error?.message,
+    });
+    return null;
   }
 }
 
@@ -418,10 +688,16 @@ async function runDetection(
     detectorCalls.push(callDetector("eye", `${DETECTION_URL}/detect/eye`, payload));
   }
 
-  const settled = await Promise.all(detectorCalls);
+  const [settled, continuityResult] = await Promise.all([
+    Promise.all(detectorCalls),
+    callContinuityDetector(cleanFrame, assessmentId, candidateId, examId),
+  ]);
   const rawResults = settled
     .filter((item) => item.status === "fulfilled" && item.data)
     .map((item) => item.data);
+  if (continuityResult) {
+    rawResults.push(continuityResult);
+  }
   const failures = settled.filter((item) => item.status === "rejected");
 
   if (failures.length) {
@@ -433,17 +709,24 @@ async function runDetection(
   // Attach the exact camera frame used by the detectors. The IPC layer forwards
   // this value to /api/assessments/detect. The backend uploads it to MinIO only
   // when the policy result is a confirmed violation; warnings ignore the frame.
-  const results = fusedResults.map((result) => ({
-    ...result,
-    assessmentid: assessmentId,
-    assessment_id: assessmentId,
-    candidateid: candidateId,
-    candidate_id: candidateId,
-    examid: examId,
-    exam_id: examId,
-    screenshotb64: cleanFrame,
-    screenshot_b64: cleanFrame,
-  }));
+  const results = fusedResults.map((result) => {
+    const identityRecovery =
+      result.type === "identity_continuity" &&
+      result.identity_decision === "SAME_PERSON";
+    return {
+      ...result,
+      assessmentid: assessmentId,
+      assessment_id: assessmentId,
+      candidateid: candidateId,
+      candidate_id: candidateId,
+      examid: examId,
+      exam_id: examId,
+      screenshotb64: identityRecovery ? null : cleanFrame,
+      screenshot_b64: identityRecovery ? null : cleanFrame,
+      persist: identityRecovery ? false : result.persist,
+      recovery_event: identityRecovery || result.recovery_event === true,
+    };
+  });
 
   logDetectionResult(results);
   return results;
@@ -469,6 +752,25 @@ function startCapture(data, mainWindow) {
   console.log("Mode      :", monitoringMode);
   console.log("Eye det.  :", ENABLE_EYE_DETECTION ? "enabled" : "disabled");
   console.log("Fusion    :", ENABLE_HEAD_EYE_FUSION ? "enabled" : "disabled");
+  console.log("[FACE CONTINUITY] Session configuration", {
+    enabled: toBoolean(
+      normaliseValue(
+        sessionData,
+        "identityComparisonEnabled",
+        "identity_comparison_enabled",
+      ),
+      false,
+    ),
+    referenceId: normaliseValue(
+      sessionData,
+      "identityReferenceId",
+      "identity_reference_id",
+    ),
+    assessmentId: ids.assessmentId,
+    tokenAvailable: Boolean(
+      normaliseValue(sessionData, "token", "accessToken", "access_token"),
+    ),
+  });
   console.log("================================");
 
   if (
@@ -503,6 +805,8 @@ function stopCapture(mainWindow) {
     console.warn("[WEBCAM] Renderer not available while stopping capture.");
   }
   sessionData = null;
+  cachedIdentityReference = null;
+  cachedIdentityReferenceKey = null;
 }
 
 function getCaptureState() {
