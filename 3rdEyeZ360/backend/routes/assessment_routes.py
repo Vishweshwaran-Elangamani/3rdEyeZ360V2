@@ -1514,7 +1514,7 @@ async def assessment_action(assessment_id: str, body: dict, current_user=Depends
     if action == "terminate":
         if current_status in {"TERMINATED", "COMPLETED", "LOCKED"} or is_assessment_finalized(assessment):
             raise HTTPException(status_code=409, detail="Finalized assessment cannot be modified")
-        update.update({"status": "TERMINATED", "assessmentstatus": "TERMINATED", "assessment_status": "TERMINATED", "finalstatus": "TERMINATED", "final_status": "TERMINATED", "isfinalized": True, "is_finalized": True, "finalizedreason": "EXAMINER_TERMINATED", "finalized_reason": "EXAMINER_TERMINATED", "finalizedat": now, "finalized_at": now, "activesessionid": None, "active_session_id": None, "waitingsessionid": None, "waiting_session_id": None, "exittime": now, "exit_time": now, "attendance_left_at": now, "attendanceleftat": now})
+        update.update({"status": "TERMINATED", "assessmentstatus": "TERMINATED", "assessment_status": "TERMINATED", "finalstatus": "TERMINATED", "final_status": "TERMINATED", "isfinalized": True, "is_finalized": True, "thresholdreached": False, "threshold_reached": False, "finalizedreason": "EXAMINER_TERMINATED", "finalized_reason": "EXAMINER_TERMINATED", "finalizedat": now, "finalized_at": now, "activesessionid": None, "active_session_id": None, "waitingsessionid": None, "waiting_session_id": None, "exittime": now, "exit_time": now, "attendance_left_at": now, "attendanceleftat": now})
     elif action == "pause":
         if current_status == "PAUSED":
             raise HTTPException(status_code=409, detail="Assessment is already paused")

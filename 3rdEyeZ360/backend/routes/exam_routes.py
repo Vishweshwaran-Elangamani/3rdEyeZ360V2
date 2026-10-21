@@ -101,6 +101,13 @@ def _clean_list(value):
     ]
 
 
+def _duration_seconds(start_value, end_value=None) -> int:
+    if not isinstance(start_value, datetime):
+        return 0
+    effective_end = end_value if isinstance(end_value, datetime) else datetime.utcnow()
+    return max(0, int((effective_end - start_value).total_seconds()))
+
+
 def _validate_violation_threshold(value) -> int:
     if isinstance(value, bool):
         raise HTTPException(
@@ -1251,9 +1258,10 @@ async def _end_exam_run(db, exam: dict, exam_id: str, actor_id: str, automatic: 
         if is_assessment_finalized(assessment):
             continue
         await db.assessments.update_one({"_id": assessment["_id"]}, {"$set": {
-            "status": "TERMINATED", "assessmentstatus": "TERMINATED", "assessment_status": "TERMINATED",
-            "final_status": "TERMINATED", "finalstatus": "TERMINATED",
+            "status": "COMPLETED", "assessmentstatus": "COMPLETED", "assessment_status": "COMPLETED",
+            "final_status": "COMPLETED", "finalstatus": "COMPLETED",
             "isfinalized": True, "is_finalized": True,
+            "threshold_reached": False, "thresholdreached": False,
             "finalizedreason": "SESSION_TIMER_ENDED" if automatic else "EXAM_ENDED",
             "finalized_reason": "SESSION_TIMER_ENDED" if automatic else "EXAM_ENDED",
             "finalizedat": now, "finalized_at": now,
@@ -1769,6 +1777,7 @@ async def get_exam_attendance(exam_id: str, current_user=Depends(require_role("E
             "session_number": session_number if attended else None,
             "joined_at": joined_at,
             "left_at": left_at,
+            "participation_seconds": _duration_seconds(joined_at, left_at),
         }
         if attended:
             sessions[session_number - 1]["attended_candidates"].append(row)
@@ -1866,6 +1875,15 @@ async def get_exam_assessments(
                 "assessmentstatus": (
                     assessment_status
                 ),
+                "assessment_status": assessment_status,
+                "final_status": assessment.get("final_status") or assessment.get("finalstatus") or "",
+                "finalstatus": assessment.get("finalstatus") or assessment.get("final_status") or "",
+                "finalized_reason": assessment.get("finalized_reason") or assessment.get("finalizedreason") or "",
+                "finalizedreason": assessment.get("finalizedreason") or assessment.get("finalized_reason") or "",
+                "is_finalized": bool(assessment.get("is_finalized", assessment.get("isfinalized", False))),
+                "isfinalized": bool(assessment.get("isfinalized", assessment.get("is_finalized", False))),
+                "threshold_reached": bool(assessment.get("threshold_reached", assessment.get("thresholdreached", False))),
+                "thresholdreached": bool(assessment.get("thresholdreached", assessment.get("threshold_reached", False))),
                 "violation_count": (
                     assessment.get(
                         "violation_count",

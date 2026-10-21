@@ -246,6 +246,33 @@ function formatReportDateTime(value) {
   if (!timestamp) return "Not available";
   return new Date(timestamp).toLocaleString();
 }
+function formatSystemDateTime(value) {
+  const timestamp = parseServerDateMs(value);
+  if (!timestamp) return "—";
+  return new Date(timestamp).toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+function formatParticipationTime(secondsValue, startValue, endValue, nowValue = Date.now()) {
+  let totalSeconds = Number(secondsValue);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    const start = parseServerDateMs(startValue);
+    const end = parseServerDateMs(endValue) || nowValue;
+    totalSeconds = start && end >= start ? Math.floor((end - start) / 1000) : 0;
+  }
+  totalSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
 function formatReportDuration(startValue, endValue) {
   const start = parseServerDateMs(startValue);
   const end = parseServerDateMs(endValue);
@@ -382,6 +409,10 @@ function normalizeCandidate(c) {
     riskscore: c.riskscore ?? c.risk_score ?? 0,
     credibilityscore: c.credibilityscore ?? c.credibility_score ?? 100,
     attendancestatus: c.attendancestatus ?? c.attendance_status ?? "",
+    finalstatus: c.finalstatus ?? c.final_status ?? "",
+    finalizedreason: c.finalizedreason ?? c.finalized_reason ?? "",
+    isfinalized: Boolean(c.isfinalized ?? c.is_finalized),
+    thresholdreached: Boolean(c.thresholdreached ?? c.threshold_reached),
   };
 }
 
@@ -2402,6 +2433,7 @@ function CandidateTile({
   const categoryMeta = {
     ONLINE: { label: "Online", color: t.success, background: t.successBg },
     CRITICAL: { label: "Critical", color: t.warning, background: t.warningBg },
+    COMPLETED: { label: "Completed", color: t.info, background: t.infoBg },
     DISQUALIFIED: { label: "Disqualified", color: t.danger, background: t.dangerBg },
     OFFLINE: { label: "Offline", color: t.textMuted, background: t.surfaceGlass },
   }[category] || { label: "Offline", color: t.textMuted, background: t.surfaceGlass };
@@ -2414,21 +2446,76 @@ function CandidateTile({
         isolation: "isolate",
         zIndex: unreadCount > 0 ? 20 : 1,
         borderRadius: 17,
-        boxShadow: category === "CRITICAL" ? `0 0 0 2px ${t.warning}88, ${t.glowWarning}` : category === "DISQUALIFIED" ? `0 0 0 2px ${t.danger}88, ${t.glowDanger}` : "none",
+        boxShadow: category === "CRITICAL" ? `0 0 0 2px ${t.warning}88, ${t.glowWarning}` : category === "COMPLETED" ? `0 0 0 2px ${t.info}66, 0 6px 24px ${t.info}22` : category === "DISQUALIFIED" ? `0 0 0 2px ${t.danger}88, ${t.glowDanger}` : "none",
       }}
     >
       <div style={{ position: "absolute", top: 10, left: 10, zIndex: 40, display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 999, background: categoryMeta.background, color: categoryMeta.color, border: `1px solid ${categoryMeta.color}66`, fontSize: 8.5, fontWeight: 900, letterSpacing: .55, textTransform: "uppercase", pointerEvents: "none", backdropFilter: "blur(10px)" }}>
         <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryMeta.color, boxShadow: `0 0 7px ${categoryMeta.color}` }} />
         {categoryMeta.label}
       </div>
-      <CandidateVideoTile
-        candidate={c}
-        stream={stream}
-        connectionState={connectionState}
-        selected={isActive}
-        onClick={onClick}
-        theme={t}
-      />
+      {["COMPLETED", "DISQUALIFIED"].includes(category) ? (
+        <button
+          type="button"
+          onClick={onClick}
+          style={{
+            width: "100%",
+            minHeight: 160,
+            padding: 0,
+            borderRadius: 16,
+            border: `1px solid ${isActive ? t.accent : t.borderStrong}`,
+            background: t.cardSurface,
+            color: t.textPrimary,
+            cursor: "pointer",
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            fontFamily: "'Inter', sans-serif",
+          }}
+        >
+          <div style={{ flex: 1, minHeight: 116, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10 }}>
+            <div
+              style={{
+                width: 50,
+                height: 50,
+                borderRadius: "50%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: categoryMeta.color,
+                background: categoryMeta.background,
+                border: `1px solid ${categoryMeta.color}66`,
+                fontSize: 20,
+                fontWeight: 800,
+                fontFamily: "'Space Grotesk', sans-serif",
+              }}
+            >
+              {String(c?.candidatename || "C").charAt(0).toUpperCase()}
+            </div>
+            <div style={{ color: categoryMeta.color, fontSize: 12, fontWeight: 800 }}>
+              {category === "COMPLETED"
+                ? "Assessment completed"
+                : "Removed due to violations"}
+            </div>
+          </div>
+          <div style={{ minHeight: 42, padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, borderTop: `1px solid ${t.border}` }}>
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 800 }}>
+              {c?.candidatename || c?.candidateid || "Candidate"}
+            </span>
+            <span style={{ color: categoryMeta.color, fontSize: 9, fontWeight: 900, letterSpacing: .5 }}>
+              {categoryMeta.label.toUpperCase()}
+            </span>
+          </div>
+        </button>
+      ) : (
+        <CandidateVideoTile
+          candidate={c}
+          stream={stream}
+          connectionState={connectionState}
+          selected={isActive}
+          onClick={onClick}
+          theme={t}
+        />
+      )}
 
       {unreadCount > 0 ? (
         <div
@@ -3377,6 +3464,21 @@ export default function ExaminerDashboard() {
       candidates.forEach((candidate) => {
         const candidateId = candidate?.candidateid;
         if (!candidateId) return;
+        const status = normalizeStatusKey(candidate?.status);
+        const finalStatus = normalizeStatusKey(candidate?.finalstatus ?? candidate?.final_status);
+        const finalizedReason = normalizeStatusKey(candidate?.finalizedreason ?? candidate?.finalized_reason);
+        const violationCount = Number(candidate?.violationcount ?? candidate?.violation_count ?? 0) || 0;
+        const violationLimit = Math.max(1, Number(selectedExam?.violationthreshold ?? selectedExam?.violation_threshold ?? 10) || 10);
+        const terminalCandidate =
+          Boolean(candidate?.thresholdreached ?? candidate?.threshold_reached) ||
+          status === "LOCKED" ||
+          finalStatus === "LOCKED" ||
+          ["VIOLATIONTHRESHOLD", "VIOLATIONTHRESHOLDREACHED", "THRESHOLDREACHED"].includes(finalizedReason) ||
+          violationCount >= violationLimit ||
+          Boolean(candidate?.isfinalized ?? candidate?.is_finalized) ||
+          ["COMPLETED", "TERMINATED"].includes(status) ||
+          ["COMPLETED", "TERMINATED"].includes(finalStatus);
+        if (terminalCandidate) return;
 
         const key = String(candidateId);
         const stream = candidateCameraStreams[key];
@@ -3429,6 +3531,7 @@ export default function ExaminerDashboard() {
     candidateCameraStreams,
     candidateCameraStates,
     requestCandidateCamera,
+    selectedExam?.violationthreshold,
   ]);
   const extendSessionTime = async (minutes) => {
     if (!isExamRunning) { setExtendTimeOpen(false); setActionMsg("The session is no longer running. Time can no longer be extended."); setTimeout(() => setActionMsg(""), 4500); return; }
@@ -4862,8 +4965,26 @@ export default function ExaminerDashboard() {
       const connectionState = String(candidateCameraStates[key] || "").toLowerCase();
       const hasLiveVideo = Boolean(stream?.getVideoTracks?.().some((track) => track.readyState === "live"));
       const isConnected = hasLiveVideo || ["connected", "completed"].includes(connectionState);
-      const isDisqualified = ["LOCKED", "TERMINATED"].includes(status) || Boolean(candidate?.thresholdreached ?? candidate?.threshold_reached) || violationCount >= violationLimit;
+      const finalStatus = normalizeStatusKey(candidate?.finalstatus ?? candidate?.final_status);
+      const finalizedReason = normalizeStatusKey(candidate?.finalizedreason ?? candidate?.finalized_reason);
+      const thresholdReached = Boolean(candidate?.thresholdreached ?? candidate?.threshold_reached);
+      const disqualifiedByReason = [
+        "VIOLATIONTHRESHOLD",
+        "VIOLATIONTHRESHOLDREACHED",
+        "THRESHOLDREACHED",
+      ].includes(finalizedReason);
+      const isDisqualified =
+        thresholdReached ||
+        status === "LOCKED" ||
+        finalStatus === "LOCKED" ||
+        disqualifiedByReason ||
+        violationCount >= violationLimit;
       if (isDisqualified) return "DISQUALIFIED";
+      const isCompleted =
+        Boolean(candidate?.isfinalized ?? candidate?.is_finalized) ||
+        ["COMPLETED", "TERMINATED"].includes(status) ||
+        ["COMPLETED", "TERMINATED"].includes(finalStatus);
+      if (isCompleted) return "COMPLETED";
       if (violationCount >= Math.max(1, violationLimit - 2)) return "CRITICAL";
       if (isConnected) return "ONLINE";
       return "OFFLINE";
@@ -4871,10 +4992,11 @@ export default function ExaminerDashboard() {
     const categoryCounts = candidates.reduce((counts, candidate) => {
       counts[candidateCategory(candidate)] += 1;
       return counts;
-    }, { ONLINE: 0, CRITICAL: 0, DISQUALIFIED: 0, OFFLINE: 0 });
+    }, { ONLINE: 0, CRITICAL: 0, COMPLETED: 0, DISQUALIFIED: 0, OFFLINE: 0 });
     const liveCategories = [
       { key: "ONLINE", label: "Online", color: t.success },
       { key: "CRITICAL", label: "Critical", color: t.warning },
+      { key: "COMPLETED", label: "Completed", color: t.info },
       { key: "DISQUALIFIED", label: "Disqualified", color: t.danger },
       { key: "OFFLINE", label: "Offline", color: t.textMuted },
     ];
@@ -5236,7 +5358,7 @@ export default function ExaminerDashboard() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 12 }}>{[["Total Assigned",attendanceData?.total_assigned ?? candidates.length,t.accent],["Attended",attendanceData?.total_attended ?? 0,t.success],["Never Attended",attendanceData?.never_attended_count ?? 0,t.danger]].map(([label,value,color])=><div key={label} style={{ padding:16,borderRadius:15,background:t.cardSurface,border:`1px solid ${t.border}` }}><div style={{ color:t.textMuted,fontSize:9,fontWeight:800,textTransform:"uppercase" }}>{label}</div><div style={{ marginTop:7,color,fontSize:25,fontWeight:900 }}>{value}</div></div>)}</div>
               <div style={{ display:"flex",gap:8,flexWrap:"wrap" }}>{attendanceSessions.map((session)=>{const key=`SESSION_${session.session_number}`;const active=attendanceSession===key;return <button key={key} onClick={()=>setAttendanceSession(key)} style={{height:38,padding:"0 13px",borderRadius:10,border:`1px solid ${active?t.borderAccent:t.border}`,background:active?t.accentSoft:t.surfaceGlass,color:active?t.accent:t.textSecondary,cursor:"pointer",fontWeight:800}}>Session {session.session_number} · {session.attended_count}</button>})}<button onClick={()=>setAttendanceSession("NEVER_ATTENDED")} style={{height:38,padding:"0 13px",borderRadius:10,border:`1px solid ${attendanceSession==="NEVER_ATTENDED"?t.danger:t.border}`,background:attendanceSession==="NEVER_ATTENDED"?t.dangerBg:t.surfaceGlass,color:attendanceSession==="NEVER_ATTENDED"?t.danger:t.textSecondary,cursor:"pointer",fontWeight:800}}>Never Attended · {attendanceData?.never_attended_count ?? 0}</button></div>
               <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}><div><h3 style={{margin:0,color:t.textPrimary}}>{attendanceSession==="NEVER_ATTENDED"?"Never Attended":`Session ${selectedAttendanceSession?.session_number||1} Attendance`}</h3><div style={{marginTop:4,color:t.textMuted,fontSize:11.5}}>{attendanceSession==="NEVER_ATTENDED"?"Candidates who did not participate in any session.":"Candidates who attended this session. A candidate can attend only one session."}</div></div><input value={attendanceSearch} onChange={(e)=>setAttendanceSearch(e.target.value)} placeholder="Search candidate, ID or email..." style={{width:310,height:40,padding:"0 12px",borderRadius:10,border:`1px solid ${t.border}`,background:t.inputBg,color:t.textPrimary}}/></div>
-              <div style={{overflowX:"auto",borderRadius:15,border:`1px solid ${t.border}`,background:t.cardSurface}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:760}}><thead><tr>{["Candidate","Candidate ID","Status","Session","Joined At","Left At"].map(label=><th key={label} style={{padding:12,textAlign:"left",color:t.textMuted,borderBottom:`1px solid ${t.border}`}}>{label}</th>)}</tr></thead><tbody>{filteredAttendanceRows.length===0?<tr><td colSpan="6" style={{padding:40,textAlign:"center",color:t.textMuted}}>No candidates in this attendance section.</td></tr>:filteredAttendanceRows.map(item=><tr key={item.assessment_id}><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}><b>{item.candidate_name}</b><div style={{color:t.textMuted,fontSize:10}}>{item.candidate_email}</div></td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.candidate_id}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`,color:item.attended?t.success:t.danger,fontWeight:800}}>{item.attended?"Attended":"Never Attended"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.session_number?`Session ${item.session_number}`:"—"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.joined_at?new Date(item.joined_at).toLocaleString():"—"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.left_at?new Date(item.left_at).toLocaleString():"—"}</td></tr>)}</tbody></table></div>
+              <div style={{overflowX:"auto",borderRadius:15,border:`1px solid ${t.border}`,background:t.cardSurface}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:980}}><thead><tr>{["Candidate","Candidate ID","Status","Session","Joined At","Left At","Participation Time"].map(label=><th key={label} style={{padding:12,textAlign:"left",color:t.textMuted,borderBottom:`1px solid ${t.border}`}}>{label}</th>)}</tr></thead><tbody>{filteredAttendanceRows.length===0?<tr><td colSpan="7" style={{padding:40,textAlign:"center",color:t.textMuted}}>No candidates in this attendance section.</td></tr>:filteredAttendanceRows.map(item=><tr key={item.assessment_id}><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}><b>{item.candidate_name}</b><div style={{color:t.textMuted,fontSize:10}}>{item.candidate_email}</div></td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.candidate_id}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`,color:item.attended?t.success:t.danger,fontWeight:800}}>{item.attended?"Attended":"Never Attended"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{item.session_number?`Session ${item.session_number}`:"—"}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{formatSystemDateTime(item.joined_at)}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`}}>{formatSystemDateTime(item.left_at)}</td><td style={{padding:12,borderBottom:`1px solid ${t.border}`,color:item.attended?t.info:t.textMuted,fontWeight:800}}>{item.attended?formatParticipationTime(item.participation_seconds,item.joined_at,item.left_at,clock.getTime()):"—"}</td></tr>)}</tbody></table></div>
             </div>}
           </div>
         ) : monitorTab === "requests" ? (
@@ -5601,9 +5723,12 @@ export default function ExaminerDashboard() {
                         unreadPrivateMessages[String(c.candidateid)] || 0
                       }
                       onClick={() => {
+                        const category = candidateCategory(c);
                         setSelectedCandidate(c);
                         loadMonitoringEvents(c.candidateid, selectedExamId);
-                        requestCandidateCamera(c.candidateid, c.assessmentid);
+                        if (!["COMPLETED", "DISQUALIFIED"].includes(category)) {
+                          requestCandidateCamera(c.candidateid, c.assessmentid);
+                        }
                       }}
                       theme={theme}
                       category={candidateCategory(c)}
