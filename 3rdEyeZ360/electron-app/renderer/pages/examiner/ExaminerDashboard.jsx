@@ -345,6 +345,16 @@ function exportCumulativeReportExcel(reportData) {
   const html = `<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="UTF-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Cumulative Report</x:Name><x:WorksheetOptions><x:FreezePanes/><x:FrozenNoSplit/><x:SplitHorizontal>8</x:SplitHorizontal><x:TopRowBottomPane>8</x:TopRowBottomPane></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--><style>body{font-family:Calibri,Arial,sans-serif}table{border-collapse:collapse}th,td{border:1px solid #aab3c2;padding:7px 9px;vertical-align:top;white-space:normal}h2{color:#1f3c88}.summary td:first-child{font-weight:700;background:#eef3f8}.data th{font-weight:700;background:#dce6f1}.data td:nth-child(10),.data td:nth-child(11){min-width:280px}.number{text-align:right}</style></head><body><h2>${escapeExcelHtml(examName)} - Cumulative Assessment Report</h2><table class="summary">${summaryRows.map(([label, value]) => `<tr><td>${escapeExcelHtml(label)}</td><td>${escapeExcelHtml(value)}</td></tr>`).join("")}</table><br><table class="data"><thead><tr>${columns.map((column) => `<th>${escapeExcelHtml(column)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td${["Credibility Score (%)", "Violation Count"].includes(column) ? ' class="number"' : ""}>${escapeExcelHtml(row[column])}</td>`).join("")}</tr>`).join("")}</tbody></table></body></html>`;
   downloadReportFile(`\uFEFF${html}`, "application/vnd.ms-excel;charset=utf-8", `${sanitizeReportFileName(examName)}-cumulative-report.xls`);
 }
+function identityImageSource(payload) {
+  const directUrl = payload?.data_url || payload?.image_url || payload?.imageurl || null;
+  if (directUrl) return String(directUrl);
+  const raw = payload?.image_b64 || payload?.imageb64 || null;
+  if (!raw) return null;
+  const value = String(raw).trim();
+  if (!value) return null;
+  return value.startsWith("data:") ? value : `data:image/jpeg;base64,${value}`;
+}
+
 function normalizeReportCandidate(candidate) {
   return {
     ...candidate,
@@ -362,6 +372,14 @@ function normalizeReportCandidate(candidate) {
     violations: Array.isArray(candidate.violations) ? candidate.violations : [],
   };
 }
+function normalizeProject(project) {
+  if (!project) return null;
+  const id = project.project_id ?? project.projectid ?? null;
+  const name = project.project_name ?? project.projectname ?? project.name ?? id;
+  if (!id || !name || String(id).trim().toUpperCase() === "ALL") return null;
+  return { ...project, project_id: String(id).trim(), projectid: String(id).trim(), project_name: String(name).trim(), projectname: String(name).trim() };
+}
+
 function normalizeExam(exam) {
   if (!exam) return null;
   return {
@@ -380,6 +398,12 @@ function normalizeExam(exam) {
     timeframes: exam.timeframes ?? exam.flexibleintervals ?? exam.flexible_intervals ?? [],
     sessionnumber: Number(exam.sessionnumber ?? exam.session_number ?? 0),
     permanentlystopped: Boolean(exam.permanentlystopped ?? exam.permanently_stopped),
+    project_id: exam.project_id ?? exam.projectid ?? null,
+    projectid: exam.projectid ?? exam.project_id ?? null,
+    project_name: exam.project_name ?? exam.projectname ?? exam.project_name_snapshot ?? "",
+    projectname: exam.projectname ?? exam.project_name ?? exam.project_name_snapshot ?? "",
+    is_global: Boolean(exam.is_global ?? exam.isglobal ?? String(exam.project_id ?? exam.projectid ?? "").toUpperCase() === "ALL"),
+    isglobal: Boolean(exam.isglobal ?? exam.is_global ?? String(exam.project_id ?? exam.projectid ?? "").toUpperCase() === "ALL"),
     stopmode: String(exam.stopmode ?? exam.stop_mode ?? "BOTH").toUpperCase(),
     violationthreshold: Math.max(
       1,
@@ -2643,6 +2667,9 @@ export default function ExaminerDashboard() {
   const [candidates, setCandidates] = useState([]);
   const [liveData, setLiveData] = useState({});
   const [selectedCandidate, setSelectedCandidate] = useState(null);
+  const [candidateIdentityReference, setCandidateIdentityReference] = useState(null);
+  const [candidateIdentityLoading, setCandidateIdentityLoading] = useState(false);
+  const [candidateIdentityError, setCandidateIdentityError] = useState("");
   const [violations, setViolations] = useState([]);
   const [warningEvents, setWarningEvents] = useState([]);
   const [violationEvents, setViolationEvents] = useState([]);
@@ -2792,7 +2819,12 @@ export default function ExaminerDashboard() {
     return counts;
   }, [reentryRequests]);
 
-  useEffect(() => { if (!accessToken) return; axios.get(`${API}/api/projects/me`, { headers }).then((response) => setMappedProjects(response.data || [])).catch(() => setMappedProjects([])); }, [accessToken, headers]);
+  useEffect(() => {
+    if (!accessToken) return;
+    axios.get(`${API}/api/projects/me`, { headers })
+      .then((response) => setMappedProjects(Array.isArray(response.data) ? response.data.map(normalizeProject).filter(Boolean) : []))
+      .catch(() => setMappedProjects([]));
+  }, [accessToken, headers]);
   useEffect(() => {
     if (!projectDropdownOpen) return undefined;
     const closeOnOutside = (event) => {
@@ -2864,6 +2896,27 @@ export default function ExaminerDashboard() {
   );
 
   const loadAttendance = useCallback(async (examId) => { if (!examId) return; setAttendanceLoading(true); setAttendanceError(""); try { const response = await axios.get(`${API}/api/exams/${examId}/attendance`, { headers }); setAttendanceData(response.data || null); } catch (error) { setAttendanceError(error?.response?.data?.detail || error?.message || "Attendance could not be loaded."); } finally { setAttendanceLoading(false); } }, [headers]);
+  const loadCandidateIdentityReference = useCallback(async (assessmentId) => {
+    if (!assessmentId) return null;
+    setCandidateIdentityLoading(true);
+    setCandidateIdentityError("");
+    setCandidateIdentityReference(null);
+    try {
+      const response = await axios.get(`${API}/api/assessments/${assessmentId}/identity-reference`, { headers });
+      const data = response.data || {};
+      const reference = {
+        ...data,
+        imageUrl: identityImageSource(data),
+        capturedAt: data.captured_at || data.capturedat || null,
+      };
+      setCandidateIdentityReference(reference);
+      return reference;
+    } catch (error) {
+      if (error?.response?.status !== 404) setCandidateIdentityError(error?.response?.data?.detail || error?.message || "Identity reference could not be loaded.");
+      return null;
+    } finally { setCandidateIdentityLoading(false); }
+  }, [headers]);
+
   const loadMonitoringEvents = useCallback(
     async (candidateId, examId, { silent = false } = {}) => {
       if (!candidateId || !examId) return null;
@@ -4023,10 +4076,24 @@ export default function ExaminerDashboard() {
       month: "long",
     });
 
+    const availableProjects = (() => {
+      const byId = new Map();
+      for (const project of mappedProjects) {
+        const normalized = normalizeProject(project);
+        if (normalized) byId.set(normalized.project_id, normalized);
+      }
+      for (const exam of exams) {
+        const id = String(exam.project_id || exam.projectid || "").trim();
+        if (!id || id.toUpperCase() === "ALL") continue;
+        const name = String(exam.project_name || exam.projectname || id).trim();
+        if (!byId.has(id)) byId.set(id, { project_id: id, projectid: id, project_name: name, projectname: name });
+      }
+      return Array.from(byId.values()).sort((a, b) => String(a.project_name).localeCompare(String(b.project_name)));
+    })();
     const projectExams = exams.filter((exam) => {
       const examProjectId = String(exam.project_id || exam.projectid || "").trim();
       const isCommonAssessment =
-        examProjectId === "ALL" || Boolean(exam.is_global || exam.isglobal);
+        !examProjectId || examProjectId.toUpperCase() === "ALL" || Boolean(exam.is_global || exam.isglobal);
       if (projectFilter === "ALL") return isCommonAssessment;
       return !isCommonAssessment && examProjectId === String(projectFilter);
     });
@@ -4100,8 +4167,8 @@ export default function ExaminerDashboard() {
 
     const selectedProjectLabel = projectFilter === "ALL"
       ? "Common Assessments"
-      : mappedProjects.find((project) => String(project.project_id) === String(projectFilter))?.project_name || "Common Assessments";
-    const projectOptions = [{ project_id: "ALL", project_name: "Common Assessments" }, ...mappedProjects];
+      : availableProjects.find((project) => String(project.project_id) === String(projectFilter))?.project_name || "Common Assessments";
+    const projectOptions = [{ project_id: "ALL", project_name: "Common Assessments" }, ...availableProjects];
     const projectSelector = (
       <div ref={projectDropdownRef} style={{ position: "relative", zIndex: 120, flexShrink: 0 }}>
         <button type="button" aria-haspopup="listbox" aria-expanded={projectDropdownOpen} onClick={() => setProjectDropdownOpen((open) => !open)} style={{ height: 40, minWidth: 164, padding: "0 12px", borderRadius: 11, border: `1px solid ${projectDropdownOpen ? t.borderAccent : t.border}`, background: projectDropdownOpen ? t.surfaceGlassHover : t.inputBg, color: t.textPrimary, display: "inline-flex", alignItems: "center", justifyContent: "space-between", gap: 11, cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 750, boxShadow: projectDropdownOpen ? `0 0 0 3px ${t.accentSoft}` : "none" }}>
@@ -4109,7 +4176,7 @@ export default function ExaminerDashboard() {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transform: projectDropdownOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .22s ease" }}><polyline points="6 9 12 15 18 9"/></svg>
         </button>
         {projectDropdownOpen ? <div role="listbox" aria-label="Filter exams by project" style={{ position: "absolute", top: "calc(100% + 7px)", left: 0, zIndex: 1200, width: 220, maxHeight: 250, overflowY: "auto", padding: 6, borderRadius: 12, background: t.surfaceSolid, border: `1px solid ${t.borderStrong}`, boxShadow: t.name === "dark" ? "0 20px 46px rgba(0,0,0,.58)" : "0 20px 46px rgba(20,28,60,.2)" }}>
-          {projectOptions.map((project) => { const value=String(project.project_id); const active=String(projectFilter)===value; return <button key={value} type="button" role="option" aria-selected={active} onClick={() => { setProjectFilter(value); setProjectDropdownOpen(false); }} style={{ width: "100%", minHeight: 38, padding: "0 10px", border: 0, borderRadius: 9, background: active ? t.accentSoft : "transparent", color: active ? t.accent : t.textSecondary, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, cursor: "pointer", textAlign: "left", fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: active ? 850 : 650 }} onMouseEnter={(event) => { if(!active) event.currentTarget.style.background=t.surfaceGlassHover; }} onMouseLeave={(event) => { if(!active) event.currentTarget.style.background="transparent"; }}><span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project.project_name}</span>{active ? <span style={{ color:t.accent, fontSize:14 }}>✓</span> : null}</button>; })}
+          {projectOptions.map((project) => { const value=String(project.project_id); const active=String(projectFilter)===value; return <button key={value} type="button" role="option" aria-selected={active} onClick={() => { setProjectFilter(value); setStatusFilter("active"); setSearch(""); setProjectDropdownOpen(false); }} style={{ width: "100%", minHeight: 38, padding: "0 10px", border: 0, borderRadius: 9, background: active ? t.accentSoft : "transparent", color: active ? t.accent : t.textSecondary, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, cursor: "pointer", textAlign: "left", fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: active ? 850 : 650 }} onMouseEnter={(event) => { if(!active) event.currentTarget.style.background=t.surfaceGlassHover; }} onMouseLeave={(event) => { if(!active) event.currentTarget.style.background="transparent"; }}><span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project.project_name}</span>{active ? <span style={{ color:t.accent, fontSize:14 }}>✓</span> : null}</button>; })}
         </div> : null}
       </div>
     );
@@ -5540,6 +5607,7 @@ export default function ExaminerDashboard() {
                                 );
                                 if (candidate) {
                                   setSelectedCandidate(candidate);
+                                  void loadCandidateIdentityReference(candidate.assessmentid);
                                   setCandidateEventTab("violations");
                                   setMonitorTab("grid");
                                   void loadMonitoringEvents(
@@ -5725,6 +5793,7 @@ export default function ExaminerDashboard() {
                       onClick={() => {
                         const category = candidateCategory(c);
                         setSelectedCandidate(c);
+                        void loadCandidateIdentityReference(c.assessmentid);
                         loadMonitoringEvents(c.candidateid, selectedExamId);
                         if (!["COMPLETED", "DISQUALIFIED"].includes(category)) {
                           requestCandidateCamera(c.candidateid, c.assessmentid);
@@ -6053,6 +6122,13 @@ export default function ExaminerDashboard() {
                       scrollbarGutter: "stable",
                     }}
                   >
+                <div style={{ marginBottom: 14, padding: 12, borderRadius: 13, background: t.surfaceGlass, border: `1px solid ${t.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 9 }}>
+                    <span style={{ color: t.textPrimary, fontSize: 11.5, fontWeight: 800 }}>PreCheck Reference Photo</span>
+                    {candidateIdentityReference?.capturedAt ? <span style={{ color: t.textMuted, fontSize: 9.5 }}>{formatSystemDateTime(candidateIdentityReference.capturedAt)}</span> : null}
+                  </div>
+                  {candidateIdentityLoading ? <div style={{ height: 140, display: "grid", placeItems: "center", color: t.textMuted, fontSize: 11.5 }}>Loading captured photo...</div> : candidateIdentityReference?.imageUrl ? <img src={candidateIdentityReference.imageUrl} alt="Candidate PreCheck identity reference" style={{ display: "block", width: "100%", height: 180, objectFit: "cover", borderRadius: 10, background: "#050608", border: `1px solid ${t.borderStrong}` }} /> : <div style={{ minHeight: 80, display: "grid", placeItems: "center", padding: 12, color: candidateIdentityError ? t.danger : t.textMuted, background: candidateIdentityError ? t.dangerBg : "transparent", borderRadius: 10, fontSize: 11.5, textAlign: "center" }}>{candidateIdentityError || "No validated PreCheck photo is available for this candidate."}</div>}
+                </div>
                     <div
                       style={{
                         display: "flex",

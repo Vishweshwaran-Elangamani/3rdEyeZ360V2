@@ -117,6 +117,20 @@ function normalizeList(...sources) {
   }
   return Array.from(unique);
 }
+function normalizeProject(raw) {
+  if (!raw) return null;
+  const id = firstValue(raw.project_id, raw.projectid);
+  const name = firstValue(raw.project_name, raw.projectname, raw.name, id);
+  if (!id || !name || String(id).trim().toUpperCase() === ALL_PROJECTS_ID) return null;
+  return {
+    ...raw,
+    project_id: String(id).trim(),
+    projectid: String(id).trim(),
+    project_name: String(name).trim(),
+    projectname: String(name).trim(),
+  };
+}
+
 function normalizeItem(raw) {
   if (!raw) return null;
   const assessmentStatusRaw =
@@ -2048,7 +2062,14 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
 
   useEffect(() => {
     if (!accessToken) return;
-    axios.get(`${API}/api/projects/me`, { headers }).then((response) => setProjects(response.data || [])).catch(() => setProjects([]));
+    axios.get(`${API}/api/projects/me`, { headers })
+      .then((response) => {
+        const rows = Array.isArray(response.data)
+          ? response.data.map(normalizeProject).filter(Boolean)
+          : [];
+        setProjects(rows);
+      })
+      .catch(() => setProjects([]));
   }, [accessToken, headers]);
 
   const fetchSharedReports = useCallback(async (silent = false) => {
@@ -2420,6 +2441,32 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
     };
   }, [socket, user, fetchAssessments, fetchSharedReports, reconcileAssessment]);
 
+  const availableProjects = useMemo(() => {
+    const byId = new Map();
+    for (const project of projects) {
+      const normalized = normalizeProject(project);
+      if (normalized) byId.set(normalized.project_id, normalized);
+    }
+    for (const assessment of assessments) {
+      const id = String(assessment.project_id || assessment.projectid || "").trim();
+      if (!id || id.toUpperCase() === ALL_PROJECTS_ID) continue;
+      const name = String(
+        assessment.project_name || assessment.projectname || id
+      ).trim();
+      if (!byId.has(id)) {
+        byId.set(id, {
+          project_id: id,
+          projectid: id,
+          project_name: name,
+          projectname: name,
+        });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      String(a.project_name).localeCompare(String(b.project_name))
+    );
+  }, [projects, assessments]);
+
   const allottedCount = assessments.length;
   const completedCount = assessments.filter((assessment) => {
     const pending = pendingRequestsByAssessment[assessment.assessmentid] ?? null;
@@ -2440,7 +2487,8 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
         assessment.project_id || assessment.projectid || ""
       ).trim();
       const isCommonAssessment =
-        assessmentProjectId === ALL_PROJECTS_ID ||
+        !assessmentProjectId ||
+        assessmentProjectId.toUpperCase() === ALL_PROJECTS_ID ||
         Boolean(assessment.is_global || assessment.isglobal);
       if (projectFilter === ALL_PROJECTS_ID) return isCommonAssessment;
       return !isCommonAssessment && assessmentProjectId === String(projectFilter);
@@ -3146,7 +3194,7 @@ export default function CandidateDashboard({ onEnterExam, onLogout }) {
           </div>
           <div style={{ display: dashboardSection === "REPORTS" ? "block" : "none", marginBottom: 28 }}><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}><div><h3 style={{ margin: 0, color: t.textPrimary, fontSize: 20, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: -0.4 }}>Shared Assessment Reports</h3><p style={{ margin: "4px 0 0", color: t.textMuted, fontSize: 12.5 }}>Reports securely shared by your examiner.</p></div></div>{sharedReportsLoading ? <div style={{ color: t.textMuted, padding: 18 }}>Loading shared reports...</div> : sharedReports.length === 0 ? <div style={{ padding: 18, borderRadius: 14, border: `1px dashed ${t.borderStrong}`, color: t.textMuted }}>No reports have been shared with you yet.</div> : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>{sharedReports.map((report) => { const snapshot=report.snapshot||{}; return <div key={report.share_id} style={{ padding: 18, borderRadius: 16, background: t.cardSurface, border: `1px solid ${t.border}` }}><div style={{ color: t.textPrimary, fontWeight: 800 }}>{snapshot.assessment_name || "Assessment Report"}</div><div style={{ marginTop: 6, color: t.textMuted, fontSize: 11.5 }}>Shared {report.shared_at ? new Date(report.shared_at).toLocaleString() : "recently"}</div><div style={{ display: "flex", gap: 8, marginTop: 12, color: t.textSecondary, fontSize: 12 }}><span>{snapshot.credibility_score ?? 0}% credibility</span><span>•</span><span>{snapshot.violation_count ?? 0} violations</span></div><button type="button" onClick={() => openSharedReport(report.share_id)} style={{ width: "100%", marginTop: 14, minHeight: 40, border: "none", borderRadius: 10, background: t.accentGradient, color: "#fff", fontWeight: 800, cursor: "pointer" }}>View Report</button></div>; })}</div>}</div>
           <div style={{ display: dashboardSection === "ASSESSMENTS" ? "block" : "none" }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}><button onClick={() => setProjectFilter("ALL")} style={{ padding: "7px 11px", borderRadius: 999, border: `1px solid ${projectFilter === "ALL" ? t.borderAccent : t.border}`, background: projectFilter === "ALL" ? t.accentSoft : t.surfaceGlass, color: projectFilter === "ALL" ? t.accent : t.textSecondary, cursor: "pointer" }}>Common Assessments</button>{projects.map((project) => <button key={project.project_id} onClick={() => setProjectFilter(project.project_id)} style={{ padding: "7px 11px", borderRadius: 999, border: `1px solid ${projectFilter === project.project_id ? t.borderAccent : t.border}`, background: projectFilter === project.project_id ? t.accentSoft : t.surfaceGlass, color: projectFilter === project.project_id ? t.accent : t.textSecondary, cursor: "pointer", fontWeight: 800 }}>{project.project_name}</button>)}</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}><button onClick={() => { setProjectFilter("ALL"); setFilter("all"); setSearchQuery(""); }} style={{ padding: "7px 11px", borderRadius: 999, border: `1px solid ${projectFilter === "ALL" ? t.borderAccent : t.border}`, background: projectFilter === "ALL" ? t.accentSoft : t.surfaceGlass, color: projectFilter === "ALL" ? t.accent : t.textSecondary, cursor: "pointer" }}>Common Assessments</button>{availableProjects.map((project) => <button key={project.project_id} onClick={() => { setProjectFilter(project.project_id); setFilter("all"); setSearchQuery(""); }} style={{ padding: "7px 11px", borderRadius: 999, border: `1px solid ${projectFilter === project.project_id ? t.borderAccent : t.border}`, background: projectFilter === project.project_id ? t.accentSoft : t.surfaceGlass, color: projectFilter === project.project_id ? t.accent : t.textSecondary, cursor: "pointer", fontWeight: 800 }}>{project.project_name}</button>)}</div>
           <div
             style={{
               display: "flex",

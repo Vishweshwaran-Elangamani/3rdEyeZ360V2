@@ -1032,6 +1032,22 @@ async def detect_assessment_activity(body: DetectionBody, current_user=Depends(r
     }
 
 
+async def _identity_reference_image_payload(bucket: str, object_name: str) -> dict:
+    response = None
+    try:
+        client = get_minio()
+        response = await run_in_threadpool(client.get_object, bucket, object_name)
+        image_bytes = await run_in_threadpool(response.read)
+    finally:
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
+    encoded_image = base64.b64encode(image_bytes).decode("ascii")
+    return {"imageb64": encoded_image, "image_b64": encoded_image, "data_url": f"data:image/jpeg;base64,{encoded_image}"}
+
 @router.post("/{assessment_id}/identity-reference")
 async def store_identity_reference(
     assessment_id: str,
@@ -1052,6 +1068,27 @@ async def store_identity_reference(
         raise HTTPException(status_code=403, detail="Access denied")
     if not exam_id or not candidate_id:
         raise HTTPException(status_code=409, detail="Assessment identity information is incomplete")
+
+    existing_status = str(assessment.get("identityreferencestatus") or assessment.get("identity_reference_status") or "").upper()
+    existing_object = assessment.get("identityreferenceobject") or assessment.get("identity_reference_object")
+    existing_reference_id = assessment.get("identityreferenceid") or assessment.get("identity_reference_id")
+    if existing_status == "VALIDATED" and existing_object:
+        existing_bucket = assessment.get("identityreferencebucket") or assessment.get("identity_reference_bucket") or get_minio_bucket()
+        existing_captured_at = assessment.get("identityreferencecapturedat") or assessment.get("identity_reference_captured_at")
+        try:
+            existing_image = await _identity_reference_image_payload(existing_bucket, existing_object)
+        except Exception as error:
+            print("[Evidence] Existing identity reference download failed:", existing_reference_id, error)
+            raise HTTPException(status_code=500, detail="Existing identity reference could not be loaded") from error
+        return {
+            "success": True, "existing": True, "status": "VALIDATED",
+            "referenceid": existing_reference_id, "reference_id": existing_reference_id,
+            "evidencebucket": existing_bucket, "evidence_bucket": existing_bucket,
+            "evidenceobject": existing_object, "evidence_object": existing_object,
+            "capturedat": existing_captured_at, "captured_at": existing_captured_at,
+            "validation": assessment.get("identityreferencevalidation") or assessment.get("identity_reference_validation") or {},
+            **existing_image,
+        }
 
     image_b64 = body.imageb64 or body.image_b64
     if not image_b64 or not str(image_b64).strip():
@@ -1156,21 +1193,11 @@ async def get_identity_reference(
     if status != "VALIDATED" or not object_name:
         raise HTTPException(status_code=404, detail="Validated identity reference not found")
 
-    response = None
     try:
-        client = get_minio()
-        response = await run_in_threadpool(client.get_object, bucket, object_name)
-        image_bytes = await run_in_threadpool(response.read)
+        image_payload = await _identity_reference_image_payload(bucket, object_name)
     except Exception as error:
         print("[Evidence] Identity reference download failed:", reference_id, error)
         raise HTTPException(status_code=500, detail="Identity reference could not be loaded") from error
-    finally:
-        if response is not None:
-            try:
-                response.close()
-                response.release_conn()
-            except Exception:
-                pass
 
     return {
         "success": True,
@@ -1181,8 +1208,10 @@ async def get_identity_reference(
         "evidence_bucket": bucket,
         "evidenceobject": object_name,
         "evidence_object": object_name,
-        "imageb64": base64.b64encode(image_bytes).decode("ascii"),
-        "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+        "capturedat": assessment.get("identityreferencecapturedat") or assessment.get("identity_reference_captured_at"),
+        "captured_at": assessment.get("identityreferencecapturedat") or assessment.get("identity_reference_captured_at"),
+        "validation": assessment.get("identityreferencevalidation") or assessment.get("identity_reference_validation") or {},
+        **image_payload,
     }
 
 @router.get("/{assessment_id}")

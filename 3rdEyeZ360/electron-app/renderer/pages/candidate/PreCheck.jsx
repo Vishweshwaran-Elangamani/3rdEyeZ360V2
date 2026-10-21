@@ -769,6 +769,16 @@ function InfoRow({ label, value, mono, t }) {
   );
 }
 
+function toIdentityImageSource(payload) {
+  const directUrl = payload?.data_url || payload?.image_url || payload?.imageurl || null;
+  if (directUrl) return String(directUrl);
+  const raw = payload?.image_b64 || payload?.imageb64 || payload?.reference_frame || payload?.frame || null;
+  if (!raw) return null;
+  const value = String(raw).trim();
+  if (!value) return null;
+  return value.startsWith("data:") ? value : `data:image/jpeg;base64,${value}`;
+}
+
 const IDENTITY_STABLE_FRAMES = 3;
 const VOICE_PARAGRAPH = "I confirm that I am the registered candidate completing this assessment without assistance.";
 function readToken(){for(const k of ["access_token","accessToken","token","authToken"]){const v=localStorage.getItem(k)||sessionStorage.getItem(k);if(v)return v;}return null;}
@@ -792,6 +802,8 @@ export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }
   const [identityState,setIdentityState]=useState("idle");
   const [identityMessage,setIdentityMessage]=useState("Complete system checks first.");
   const [identityReference,setIdentityReference]=useState(null);
+  const [identityReferenceLoading,setIdentityReferenceLoading]=useState(true);
+  const [identityReferenceReused,setIdentityReferenceReused]=useState(false);
   const [voiceEnabled,setVoiceEnabled]=useState(true);
   const [voiceState,setVoiceState]=useState("idle");
   const [voiceSample,setVoiceSample]=useState(null);
@@ -824,6 +836,49 @@ export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }
     }),
     [exam],
   );
+
+  const loadExistingIdentityReference = useCallback(async () => {
+    const assessmentId = examView.assessmentid;
+    const token = accessToken || readToken();
+    if (!assessmentId || assessmentId === "—" || !token) {
+      setIdentityReferenceLoading(false);
+      return null;
+    }
+    setIdentityReferenceLoading(true);
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:3000/api/assessments/${encodeURIComponent(assessmentId)}/identity-reference`,
+        { method: "GET", headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+      );
+      if (response.status === 404) return null;
+      const existing = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(existing?.detail || existing?.message || "Unable to load the existing identity photo.");
+      const status = String(existing?.status || "VALIDATED").toUpperCase();
+      const referencePhoto = toIdentityImageSource(existing);
+      const referenceId = existing?.reference_id || existing?.referenceid || existing?.identity_reference_id || existing?.identityReferenceId || null;
+      if (status !== "VALIDATED" || (!referencePhoto && !referenceId)) return null;
+      const reference = {
+        referencePhoto,
+        photoCapturedAt: existing?.captured_at || existing?.capturedat || null,
+        referenceId,
+        referenceObject: existing?.evidence_object || existing?.evidenceobject || existing?.object_name || existing?.objectName || null,
+        referenceBucket: existing?.evidence_bucket || existing?.evidencebucket || existing?.bucket || existing?.bucket_name || null,
+        status: "VALIDATED",
+        validation: existing?.validation || null,
+        reused: true,
+      };
+      setIdentityReference(reference);
+      setIdentityReferenceReused(true);
+      setIdentityState("passed");
+      setIdentityMessage("Identity photo already captured for this assessment. The existing reference will be reused.");
+      return reference;
+    } catch (error) {
+      console.warn("Unable to load existing identity reference", error);
+      return null;
+    } finally {
+      if (mountedRef.current) setIdentityReferenceLoading(false);
+    }
+  }, [accessToken, examView.assessmentid]);
 
   const clearTimers = useCallback(() => {
     if (healthTimerRef.current) { clearInterval(healthTimerRef.current); healthTimerRef.current=null; }
@@ -1232,8 +1287,10 @@ export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }
         );
       }
 
+      const storedReferencePhoto = toIdentityImageSource(stored) || image;
+      setIdentityReferenceReused(stored?.existing === true);
       setIdentityReference({
-        referencePhoto: image,
+        referencePhoto: storedReferencePhoto,
         photoCapturedAt: stored.captured_at || capturedAt,
         referenceId: stored.reference_id || stored.referenceid,
         referenceObject: stored.evidence_object || stored.evidenceobject,
@@ -1268,6 +1325,10 @@ export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }
   ]);
 
   const openIdentityModal = useCallback(async () => {
+    if (identityReferenceReused) {
+      setPrecheckError("Identity photo is already captured for this assessment and will be reused.");
+      return;
+    }
     if (!allPassed) {
       setPrecheckError(
         "Complete the camera, microphone, and connection checks first.",
@@ -1387,7 +1448,7 @@ export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }
         error?.message || "The camera preview is unavailable. Close and retry.",
       );
     }
-  }, [allPassed, checkIdentityFrame]);
+  }, [allPassed, checkIdentityFrame, identityReferenceReused]);
 
   const toggleVoice = () => {
     if (!import.meta.env.DEV) return;
@@ -1443,13 +1504,14 @@ export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }
     mountedRef.current = true;
     if (!hasAutoStartedRef.current) {
       hasAutoStartedRef.current = true;
+      void loadExistingIdentityReference();
       startChecks();
     }
     return () => {
       mountedRef.current = false;
       stopMedia();
     };
-  }, [startChecks, stopMedia]);
+  }, [startChecks, stopMedia, loadExistingIdentityReference]);
 
   const hasAnyFailure = Object.values(checks).some((value) => value === false);
   const completedChecks = Object.values(checks).filter(
@@ -2002,7 +2064,7 @@ export default function PreCheck({ exam, accessToken, onPass, onLogout, onBack }
               </div>
 
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                <div style={{padding:12,borderRadius:12,border:`1px solid ${t.border}`,background:t.surfaceGlass}}><b>Identity photo</b><div style={{fontSize:12,color:identityState==="passed"?t.success:t.textMuted,margin:"7px 0"}}>{identityMessage}</div>{identityReference?.referencePhoto&&<img src={identityReference.referencePhoto} alt="Identity reference" style={{width:"100%",height:100,objectFit:"cover",borderRadius:9,marginBottom:8}}/>}<button type="button" disabled={!allPassed} onClick={openIdentityModal} style={{width:"100%",padding:9,borderRadius:9,border:`1px solid ${t.borderStrong}`,background:t.surfaceGlassHover,color:t.textPrimary,cursor:"pointer"}}>{identityReference?"Retake photo":"Start automatic capture"}</button></div>
+                <div style={{padding:12,borderRadius:12,border:`1px solid ${t.border}`,background:t.surfaceGlass}}><b>Identity photo</b><div style={{fontSize:12,color:identityState==="passed"?t.success:t.textMuted,margin:"7px 0"}}>{identityMessage}</div>{identityReference?.referencePhoto&&<img src={identityReference.referencePhoto} alt="Identity reference" style={{width:"100%",height:100,objectFit:"cover",borderRadius:9,marginBottom:8}}/>}{identityReferenceReused&&<div style={{fontSize:11.5,color:t.success,background:t.successBg,border:`1px solid ${t.success}44`,padding:"7px 9px",borderRadius:9,marginBottom:8,fontWeight:700}}>Already captured for this assessment</div>}<button type="button" disabled={!allPassed||identityReferenceLoading||identityReferenceReused} onClick={openIdentityModal} style={{width:"100%",padding:9,borderRadius:9,border:`1px solid ${t.borderStrong}`,background:t.surfaceGlassHover,color:t.textPrimary,cursor:identityReferenceReused?"not-allowed":"pointer",opacity:identityReferenceReused?0.65:1}}>{identityReferenceLoading?"Checking existing photo...":identityReferenceReused?"Photo already captured":identityReference?"Retake photo":"Start automatic capture"}</button></div>
                 <div style={{padding:12,borderRadius:12,border:`1px solid ${t.border}`,background:t.surfaceGlass}}><div style={{display:"flex",justifyContent:"space-between"}}><b>Voice paragraph</b>{import.meta.env.DEV&&<button type="button" onClick={toggleVoice}>{voiceEnabled?"Enabled":"Bypassed"}</button>}</div><p style={{fontSize:11.5,color:t.textSecondary}}>{VOICE_PARAGRAPH}</p><div style={{fontSize:12,color:voiceState==="passed"||voiceState==="bypassed"?t.success:t.textMuted,marginBottom:7}}>{voiceState==="recording"?"Recording for 20 seconds...":voiceState==="passed"?"Voice sample recorded.":voiceState==="bypassed"?"Voice bypassed in development.":"Record when the identity photo is ready."}</div><button type="button" disabled={!voiceEnabled||!identityReference||voiceState==="recording"} onClick={recordVoice} style={{width:"100%",padding:9}}>{voiceState==="recording"?"Recording...":"Record paragraph"}</button></div>
               </div>
               {precheckError&&<div style={{color:t.danger,background:t.dangerBg,padding:10,borderRadius:10}}>{precheckError}</div>}
